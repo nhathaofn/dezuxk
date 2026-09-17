@@ -405,8 +405,47 @@ func CleanURL(rawURL string) string {
 	return u.Scheme + "://" + u.Host + u.Path
 }
 
+// FormatChromeProxyFlag parses various proxy formats (http://user:pass@ip:port, ip:port:user:pass, ip:port)
+// and extracts the proxy server address suitable for Chrome's --proxy-server flag.
+func FormatChromeProxyFlag(rawProxy string) (serverFlag, username, password string) {
+	rawProxy = strings.TrimSpace(rawProxy)
+	if rawProxy == "" {
+		return "", "", ""
+	}
+
+	// Format: ip:port:user:pass
+	if !strings.Contains(rawProxy, "://") && strings.Count(rawProxy, ":") == 3 {
+		parts := strings.Split(rawProxy, ":")
+		serverFlag = fmt.Sprintf("http://%s:%s", parts[0], parts[1])
+		username = parts[2]
+		password = parts[3]
+		return
+	}
+
+	// Format: scheme://...
+	if strings.Contains(rawProxy, "://") {
+		u, err := url.Parse(rawProxy)
+		if err == nil && u.Host != "" {
+			serverFlag = fmt.Sprintf("%s://%s", u.Scheme, u.Host)
+			if u.User != nil {
+				username = u.User.Username()
+				password, _ = u.User.Password()
+			}
+			return
+		}
+	}
+
+	// Format: ip:port
+	if !strings.HasPrefix(rawProxy, "http://") && !strings.HasPrefix(rawProxy, "socks5://") {
+		serverFlag = "http://" + rawProxy
+	} else {
+		serverFlag = rawProxy
+	}
+	return
+}
+
 // OpenBrowser launches a dedicated Chrome instance pointing to a saved account's profile directory.
-func (m *LoginManager) OpenBrowser(profileDir, targetURL string) error {
+func (m *LoginManager) OpenBrowser(profileDir, targetURL, proxy string) error {
 	chromePath, err := FindChromeExecutable()
 	if err != nil {
 		return err
@@ -415,8 +454,10 @@ func (m *LoginManager) OpenBrowser(profileDir, targetURL string) error {
 	if err != nil {
 		absProfileDir = profileDir
 	}
+	_ = os.MkdirAll(absProfileDir, 0755)
+
 	if targetURL == "" {
-		targetURL = "https://gemini.google.com/app"
+		targetURL = "https://flow.google.com"
 	}
 	args := []string{
 		fmt.Sprintf("--user-data-dir=%s", absProfileDir),
@@ -425,9 +466,17 @@ func (m *LoginManager) OpenBrowser(profileDir, targetURL string) error {
 		"--no-default-browser-check",
 		"--disable-sync",
 		"--profile-directory=Default",
-		"--window-size=1080,780",
-		targetURL,
+		"--window-size=1200,850",
 	}
+
+	if proxy != "" {
+		serverFlag, _, _ := FormatChromeProxyFlag(proxy)
+		if serverFlag != "" {
+			args = append(args, fmt.Sprintf("--proxy-server=%s", serverFlag))
+		}
+	}
+
+	args = append(args, targetURL)
 	cmd := exec.Command(chromePath, args...)
 	return cmd.Start()
 }

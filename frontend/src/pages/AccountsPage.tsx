@@ -10,7 +10,8 @@ import {
   RefreshAllGoogleAccounts,
   ToggleGoogleAccount,
   OpenGoogleAccountBrowser,
-  ImportGLabsBackup,
+  ImportAccountsBackupDialog,
+  ExportAccountsBackupDialog,
   SaveGoogleAccountProxy,
   UpdateGoogleAccountFeatures,
   BulkUpdateGoogleAccountFeatures,
@@ -19,12 +20,19 @@ import { ActionConfirmDialog } from "@/components/common/ActionConfirmDialog";
 import { LoginProgressModal } from "@/components/accounts/LoginProgressModal";
 import { AccountTable } from "@/components/accounts/AccountTable";
 import { ProxyModal } from "@/components/accounts/ProxyModal";
+import { AddAccountModal } from "@/components/accounts/AddAccountModal";
+import { BulkAddModal } from "@/components/accounts/BulkAddModal";
 import { toast } from "@/lib/toast";
 
 export function AccountsPage() {
   const [accounts, setAccounts] = useState<models.GoogleAccountResponse[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isImporting, setIsImporting] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+
+  // Modals state
+  const [isAddAccountModalOpen, setIsAddAccountModalOpen] = useState(false);
+  const [isBulkAddModalOpen, setIsBulkAddModalOpen] = useState(false);
 
   // Proxies stored in localStorage for fast, local persistence per account
   const [proxies, setProxies] = useState<Record<string, string>>(() => {
@@ -289,18 +297,39 @@ export function AccountsPage() {
     toast.success("Đã lưu Proxy", proxy ? `Proxy đã được lưu: ${proxy}` : "Đã chuyển về kết nối trực tiếp.");
   };
 
+  // Handler: Export Accounts Backup
+  const handleExportBackup = async () => {
+    setIsExporting(true);
+    try {
+      const res = await ExportAccountsBackupDialog();
+      if (res) {
+        const filename = res.filePath.split(/[\\/]/).pop();
+        toast.success(
+          "Sao lưu thành công",
+          `Đã sao lưu ${res.accountCount} tài khoản (${res.profileCount} profiles) vào file ${filename} (${Math.round(res.sizeBytes / 1024)} KB)!`
+        );
+      }
+    } catch (err: any) {
+      toast.error("Lỗi xuất sao lưu", err?.message || String(err));
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   // Handler: Import G-Labs Backup
   const handleImportBackup = async () => {
     setIsImporting(true);
     try {
-      const count = await ImportGLabsBackup("");
-      toast.success(
-        "Nạp backup thành công",
-        `Đã nạp thành công ${count} tài khoản Flow (PRO) từ gói backup G-Labs!`
-      );
-      await fetchAccounts();
+      const res = await ImportAccountsBackupDialog();
+      if (res) {
+        toast.success(
+          "Nạp sao lưu thành công",
+          `Đã nạp thành công ${res.accountsRestored} tài khoản và ${res.profilesRestored} hồ sơ Chrome!`
+        );
+        await fetchAccounts();
+      }
     } catch (err: any) {
-      toast.error("Lỗi nạp backup", err?.message || String(err));
+      toast.error("Lỗi nạp sao lưu", err?.message || String(err));
     } finally {
       setIsImporting(false);
     }
@@ -313,8 +342,11 @@ export function AccountsPage() {
         accounts={accounts}
         isLoading={isLoading}
         onRefreshAll={handleRefreshAll}
-        onAddAccount={() => handleStartAddAccount("flow")}
+        onAddAccount={() => setIsAddAccountModalOpen(true)}
+        onOpenBulkAdd={() => setIsBulkAddModalOpen(true)}
+        onExportBackup={handleExportBackup}
         onImportBackup={handleImportBackup}
+        isExporting={isExporting}
         isImporting={isImporting}
         onToggleActive={handleToggleActive}
         onToggleImage={handleToggleImage}
@@ -327,7 +359,22 @@ export function AccountsPage() {
         proxies={proxies}
       />
 
-      {/* Live Chrome Login Modal */}
+      {/* Add Account Modal (Chrome Login + Manual Cookie) */}
+      <AddAccountModal
+        isOpen={isAddAccountModalOpen}
+        onClose={() => setIsAddAccountModalOpen(false)}
+        onStartChromeLogin={(service) => handleStartAddAccount(service)}
+        onSuccessManual={fetchAccounts}
+      />
+
+      {/* Bulk Add Accounts Modal */}
+      <BulkAddModal
+        isOpen={isBulkAddModalOpen}
+        onClose={() => setIsBulkAddModalOpen(false)}
+        onSuccess={fetchAccounts}
+      />
+
+      {/* Live Chrome Login Progress Modal */}
       <LoginProgressModal
         isOpen={isLoginModalOpen}
         step={loginStep}

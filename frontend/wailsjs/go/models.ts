@@ -55,6 +55,110 @@ export namespace models {
 	        this.isRunning = source["isRunning"];
 	    }
 	}
+	export class BackupExportResult {
+	    success: boolean;
+	    filePath: string;
+	    accountCount: number;
+	    profileCount: number;
+	    sizeBytes: number;
+	    message: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new BackupExportResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.success = source["success"];
+	        this.filePath = source["filePath"];
+	        this.accountCount = source["accountCount"];
+	        this.profileCount = source["profileCount"];
+	        this.sizeBytes = source["sizeBytes"];
+	        this.message = source["message"];
+	    }
+	}
+	export class BulkAccountItem {
+	    email: string;
+	    password?: string;
+	    recoveryEmail?: string;
+	    proxy?: string;
+	    cookies?: string;
+	    status: string;
+	    message?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new BulkAccountItem(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.email = source["email"];
+	        this.password = source["password"];
+	        this.recoveryEmail = source["recoveryEmail"];
+	        this.proxy = source["proxy"];
+	        this.cookies = source["cookies"];
+	        this.status = source["status"];
+	        this.message = source["message"];
+	    }
+	}
+	export class BulkAddInput {
+	    rawList: string;
+	    defaultProxy: string;
+	    skipExisting: boolean;
+	    defaultTier: string;
+	    service: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new BulkAddInput(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.rawList = source["rawList"];
+	        this.defaultProxy = source["defaultProxy"];
+	        this.skipExisting = source["skipExisting"];
+	        this.defaultTier = source["defaultTier"];
+	        this.service = source["service"];
+	    }
+	}
+	export class BulkAddResult {
+	    totalParsed: number;
+	    addedCount: number;
+	    skippedCount: number;
+	    failedCount: number;
+	    items: BulkAccountItem[];
+	
+	    static createFrom(source: any = {}) {
+	        return new BulkAddResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.totalParsed = source["totalParsed"];
+	        this.addedCount = source["addedCount"];
+	        this.skippedCount = source["skippedCount"];
+	        this.failedCount = source["failedCount"];
+	        this.items = this.convertValues(source["items"], BulkAccountItem);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class GatewayStatus {
 	    isRunning: boolean;
 	    ip: string;
@@ -154,6 +258,68 @@ export namespace models {
 		    }
 		    return a;
 		}
+	}
+	export class ManualAccountInput {
+	    email: string;
+	    cookies: string;
+	    snlm0eToken: string;
+	    proxy: string;
+	    tier: string;
+	    credits: number;
+	    service: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ManualAccountInput(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.email = source["email"];
+	        this.cookies = source["cookies"];
+	        this.snlm0eToken = source["snlm0eToken"];
+	        this.proxy = source["proxy"];
+	        this.tier = source["tier"];
+	        this.credits = source["credits"];
+	        this.service = source["service"];
+	    }
+	}
+	export class ProxyTestResult {
+	    success: boolean;
+	    latencyMs: number;
+	    egressIP?: string;
+	    message: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProxyTestResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.success = source["success"];
+	        this.latencyMs = source["latencyMs"];
+	        this.egressIP = source["egressIP"];
+	        this.message = source["message"];
+	    }
+	}
+	export class RestoreResult {
+	    success: boolean;
+	    accountsRestored: number;
+	    profilesRestored: number;
+	    errors?: string[];
+	    message: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new RestoreResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.success = source["success"];
+	        this.accountsRestored = source["accountsRestored"];
+	        this.profilesRestored = source["profilesRestored"];
+	        this.errors = source["errors"];
+	        this.message = source["message"];
+	    }
 	}
 	export class UserResponse {
 	    id: number;

@@ -28,13 +28,13 @@ func TestImportGLabsBackup(t *testing.T) {
 		t.Skip("glabs-flow-accounts backup directory not found, skipping live import test")
 	}
 
-	count, err := svc.ImportGLabsBackup(backupDir)
+	res, err := svc.ImportGLabsBackup(backupDir)
 	if err != nil {
 		t.Fatalf("ImportGLabsBackup failed: %v", err)
 	}
 
-	if count != 6 {
-		t.Errorf("expected 6 accounts imported, got %d", count)
+	if res.AccountsRestored != 6 {
+		t.Errorf("expected 6 accounts imported, got %d", res.AccountsRestored)
 	}
 
 	accounts, err := svc.ListAccounts()

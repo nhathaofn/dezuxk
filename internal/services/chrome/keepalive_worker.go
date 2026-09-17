@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -125,6 +126,11 @@ func (w *KeepAliveWorker) RefreshAccount(acc *models.GoogleAccount) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
+	targetURL := "https://flow.google.com"
+	if strings.Contains(strings.ToLower(acc.Services), "gemini") && !strings.Contains(strings.ToLower(acc.Services), "flow") {
+		targetURL = "https://gemini.google.com/app"
+	}
+
 	// Launch in headless mode with existing profile
 	args := []string{
 		"--headless=new",
@@ -133,8 +139,16 @@ func (w *KeepAliveWorker) RefreshAccount(acc *models.GoogleAccount) error {
 		"--no-first-run",
 		"--no-default-browser-check",
 		"--disable-gpu",
-		"https://gemini.google.com/app",
 	}
+
+	if acc.Proxy != "" {
+		serverFlag, _, _ := FormatChromeProxyFlag(acc.Proxy)
+		if serverFlag != "" {
+			args = append(args, fmt.Sprintf("--proxy-server=%s", serverFlag))
+		}
+	}
+
+	args = append(args, targetURL)
 
 	cmd := exec.Command(chromePath, args...)
 	if err := cmd.Start(); err != nil {

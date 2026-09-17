@@ -11,6 +11,8 @@ import {
   Sparkles,
   ShieldCheck,
   AlertCircle,
+  Download,
+  Users,
 } from "lucide-react";
 
 interface AccountTableProps {
@@ -18,7 +20,10 @@ interface AccountTableProps {
   isLoading: boolean;
   onRefreshAll: () => Promise<void>;
   onAddAccount: () => void;
+  onOpenBulkAdd: () => void;
+  onExportBackup: () => Promise<void>;
   onImportBackup: () => Promise<void>;
+  isExporting?: boolean;
   isImporting?: boolean;
   onToggleActive: (id: string, active: boolean) => void;
   onToggleImage: (id: string, checked: boolean) => void;
@@ -36,7 +41,10 @@ export function AccountTable({
   isLoading,
   onRefreshAll,
   onAddAccount,
+  onOpenBulkAdd,
+  onExportBackup,
   onImportBackup,
+  isExporting = false,
   isImporting = false,
   onToggleActive,
   onToggleImage,
@@ -190,25 +198,48 @@ export function AccountTable({
         </div>
 
         {/* Right: Actions */}
-        <div className="flex items-center gap-2.5">
-          {/* Nút Nhập Backup Flow từ G-Labs */}
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Nút Nạp sao lưu */}
           <button
             type="button"
             onClick={onImportBackup}
             disabled={isImporting}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-700 text-white font-medium shadow-xs transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
-            title="Nhập tài khoản và profiles từ bản backup G-Labs (glabs-flow-accounts-20260917-160519)"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-700 text-white font-medium shadow-xs transition-all active:scale-95 disabled:opacity-50 cursor-pointer text-xs"
+            title="Nạp tài khoản và hồ sơ Chrome từ file zip hoặc thư mục sao lưu G-Labs"
           >
             <FolderDown className="size-3.5" />
-            <span>{isImporting ? "Đang nạp..." : "Nhập Backup Flow"}</span>
+            <span>{isImporting ? "Đang nạp..." : "Nạp sao lưu"}</span>
           </button>
 
-          {/* Nút Thêm tài khoản qua Chrome thật */}
+          {/* Nút Xuất sao lưu ZIP */}
+          <button
+            type="button"
+            onClick={onExportBackup}
+            disabled={isExporting || accounts.length === 0}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium shadow-xs transition-all active:scale-95 disabled:opacity-50 cursor-pointer text-xs"
+            title="Đóng gói và xuất toàn bộ tài khoản cùng hồ sơ Chrome ra file ZIP"
+          >
+            <Download className="size-3.5" />
+            <span>{isExporting ? "Đang xuất..." : "Sao lưu ZIP"}</span>
+          </button>
+
+          {/* Nút Thêm theo danh sách (Bulk Add) */}
+          <button
+            type="button"
+            onClick={onOpenBulkAdd}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-medium shadow-xs transition-all active:scale-95 cursor-pointer text-xs"
+            title="Thêm hàng loạt tài khoản từ danh sách email|pass hoặc cookies"
+          >
+            <Users className="size-3.5" />
+            <span>Thêm danh sách</span>
+          </button>
+
+          {/* Nút Thêm tài khoản đơn lẻ */}
           <button
             type="button"
             onClick={onAddAccount}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground font-medium shadow-xs transition-all active:scale-95 cursor-pointer"
-            title="Mở trình duyệt Chrome thật độc lập để đăng nhập tài khoản Google"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground font-medium shadow-xs transition-all active:scale-95 cursor-pointer text-xs"
+            title="Thêm tài khoản qua Chrome thật hoặc nhập Cookie thủ công"
           >
             <Plus className="size-3.5 stroke-[2.5]" />
             <span>Thêm tài khoản</span>
@@ -219,7 +250,7 @@ export function AccountTable({
             type="button"
             onClick={handleRefreshAll}
             disabled={isRefreshingAll || accounts.length === 0}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border bg-background hover:bg-muted font-medium text-foreground transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-border bg-background hover:bg-muted font-medium text-foreground transition-all active:scale-95 disabled:opacity-50 cursor-pointer text-xs"
             title="Quét và làm mới toàn bộ Cookies/Token các tài khoản"
           >
             <RefreshCw

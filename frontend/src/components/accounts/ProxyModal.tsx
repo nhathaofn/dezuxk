@@ -5,6 +5,8 @@ import { Input } from "@/components/ui/input";
 import { Network, CheckCircle2, XCircle, Loader2 } from "lucide-react";
 import { models } from "@/../wailsjs/go/models";
 
+import { TestGoogleAccountProxy } from "@/../wailsjs/go/main/App";
+
 interface ProxyModalProps {
   isOpen: boolean;
   account: models.GoogleAccountResponse | null;
@@ -34,7 +36,7 @@ export function ProxyModal({
     }
   }, [isOpen, currentProxy]);
 
-  const handleTest = () => {
+  const handleTest = async () => {
     if (!proxyValue.trim()) {
       setTestStatus("error");
       setTestMessage("Vui lòng nhập địa chỉ Proxy để kiểm tra.");
@@ -42,19 +44,25 @@ export function ProxyModal({
     }
 
     setTestStatus("testing");
-    setTestMessage("Đang kiểm tra kết nối proxy...");
+    setTestMessage("Đang kiểm tra kết nối qua proxy tới máy chủ Google...");
 
-    setTimeout(() => {
-      // Basic syntax check
-      const isValid = /^(https?|socks5):\/\/.+/.test(proxyValue) || /^[\w.-]+:\d+/.test(proxyValue);
-      if (isValid) {
+    try {
+      const res = await TestGoogleAccountProxy(proxyValue.trim());
+      if (res.success) {
         setTestStatus("success");
-        setTestMessage("Cấu trúc Proxy hợp lệ. Sẵn sàng sử dụng cho Chrome độc lập.");
+        setTestMessage(
+          res.egressIP
+            ? `Proxy hoạt động tốt! Độ trễ: ${res.latencyMs} ms | IP xuất ra: ${res.egressIP}`
+            : res.message || `Kết nối thành công (${res.latencyMs} ms)`
+        );
       } else {
         setTestStatus("error");
-        setTestMessage("Định dạng Proxy không đúng (vd: http://ip:port hoặc http://user:pass@ip:port).");
+        setTestMessage(res.message || "Không thể kết nối qua Proxy này.");
       }
-    }, 600);
+    } catch (err: any) {
+      setTestStatus("error");
+      setTestMessage(`Lỗi kiểm tra proxy: ${err?.message || String(err)}`);
+    }
   };
 
   const handleSave = async () => {

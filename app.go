@@ -3,9 +3,13 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"strconv"
 	"sync"
+	"time"
+
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"dezuxk/internal/config"
 	"dezuxk/internal/db"
@@ -281,12 +285,83 @@ func (a *App) RefreshAllGoogleAccounts() ([]*models.GoogleAccountResponse, error
 	return a.accountService.RefreshAllAccounts()
 }
 
-// ImportGLabsBackup imports accounts and profiles from a G-Labs backup folder or zip file.
-func (a *App) ImportGLabsBackup(backupPath string) (int, error) {
+// AddGoogleAccountManual manually inserts an account with cookies and optional token/proxy.
+func (a *App) AddGoogleAccountManual(input models.ManualAccountInput) (*models.GoogleAccountResponse, error) {
 	if a.accountService == nil {
-		return 0, errors.New("account service not initialized")
+		return nil, errors.New("account service not initialized")
+	}
+	return a.accountService.AddAccountManual(input)
+}
+
+// BulkAddGoogleAccounts imports accounts from a multiline text list.
+func (a *App) BulkAddGoogleAccounts(input models.BulkAddInput) (*models.BulkAddResult, error) {
+	if a.accountService == nil {
+		return nil, errors.New("account service not initialized")
+	}
+	return a.accountService.BulkAddAccounts(input)
+}
+
+// ExportAccountsBackupDialog prompts the user with a Windows Save File Dialog and creates a backup zip.
+func (a *App) ExportAccountsBackupDialog() (*models.BackupExportResult, error) {
+	if a.accountService == nil {
+		return nil, errors.New("account service not initialized")
+	}
+
+	defaultFilename := fmt.Sprintf("glabs-flow-accounts-%s.zip", time.Now().Format("20060102-150405"))
+	savePath, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		Title:           "Sao lưu tài khoản Google & Flow ra file ZIP",
+		DefaultFilename: defaultFilename,
+		Filters: []runtime.FileFilter{
+			{DisplayName: "Zip Archive (*.zip)", Pattern: "*.zip"},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if savePath == "" {
+		return nil, nil // User cancelled
+	}
+
+	return a.accountService.ExportBackup(savePath)
+}
+
+// ImportAccountsBackupDialog prompts the user with a Windows Open File Dialog to select any backup zip or accounts.json.
+func (a *App) ImportAccountsBackupDialog() (*models.RestoreResult, error) {
+	if a.accountService == nil {
+		return nil, errors.New("account service not initialized")
+	}
+
+	filePath, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "Chọn file sao lưu tài khoản G-Labs (*.zip hoặc accounts.json)",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "G-Labs Backup Files (*.zip, accounts.json)", Pattern: "*.zip;accounts.json"},
+			{DisplayName: "All Files (*.*)", Pattern: "*.*"},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if filePath == "" {
+		return nil, nil // User cancelled
+	}
+
+	return a.accountService.ImportGLabsBackup(filePath)
+}
+
+// ImportGLabsBackup imports accounts and profiles from a G-Labs backup folder or zip file.
+func (a *App) ImportGLabsBackup(backupPath string) (*models.RestoreResult, error) {
+	if a.accountService == nil {
+		return nil, errors.New("account service not initialized")
 	}
 	return a.accountService.ImportGLabsBackup(backupPath)
+}
+
+// TestGoogleAccountProxy tests real connectivity, latency, and egress IP for a proxy string.
+func (a *App) TestGoogleAccountProxy(proxy string) (*models.ProxyTestResult, error) {
+	if a.accountService == nil {
+		return nil, errors.New("account service not initialized")
+	}
+	return a.accountService.TestProxy(proxy)
 }
 
 // SaveGoogleAccountProxy updates the proxy URL for a Google account.

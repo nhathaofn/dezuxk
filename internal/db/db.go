@@ -124,6 +124,8 @@ func (d *DB) migrate() error {
 	d.addColumnIfNotExists("google_accounts", "image_enabled", "INTEGER DEFAULT 1")
 	d.addColumnIfNotExists("google_accounts", "video_enabled", "INTEGER DEFAULT 1")
 	d.addColumnIfNotExists("google_accounts", "user_agent", "TEXT DEFAULT ''")
+	d.addColumnIfNotExists("google_accounts", "password", "TEXT DEFAULT ''")
+	d.addColumnIfNotExists("google_accounts", "recovery_email", "TEXT DEFAULT ''")
 
 	return nil
 }
