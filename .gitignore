@@ -1,0 +1,35 @@
+# Binaries and build artifacts
+build/bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Database and local data (contains user profiles & sessions)
+*.db
+*.db-shm
+*.db-wal
+data/
+profiles/
+
+# Reverse engineering binaries & packages (>100MB exceeds GitHub limits)
+reverse/
+reverse/**
+# Node dependencies and builds
+node_modules/
+**/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+*.local
+
+# Logs and environment
+*.log
+.env
+.env.*.local
+
+# IDE and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
