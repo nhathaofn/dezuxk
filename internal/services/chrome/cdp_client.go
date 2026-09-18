@@ -72,6 +72,8 @@ type CDPClient struct {
 	stopChan    chan struct{}
 	isClosed    bool
 	closeOnce   sync.Once
+	proxyUser   string
+	proxyPass   string
 }
 
 // ConnectCDP connects to a given CDP WebSocket debugger URL.
@@ -131,8 +133,61 @@ func (c *CDPClient) readLoop() {
 				ch <- &resp
 				close(ch)
 			}
+		} else {
+			// Handle incoming CDP push events (e.g. Fetch.authRequired)
+			var event struct {
+				Method string          `json:"method"`
+				Params json.RawMessage `json:"params"`
+			}
+			if err := json.Unmarshal(data, &event); err == nil && event.Method == "Fetch.authRequired" {
+				c.handleAuthRequired(event.Params)
+			}
 		}
 	}
+}
+
+func (c *CDPClient) handleAuthRequired(params json.RawMessage) {
+	c.mu.Lock()
+	user := c.proxyUser
+	pass := c.proxyPass
+	c.mu.Unlock()
+
+	if user == "" && pass == "" {
+		return
+	}
+
+	var authEvent struct {
+		RequestID string `json:"requestId"`
+	}
+	if err := json.Unmarshal(params, &authEvent); err != nil || authEvent.RequestID == "" {
+		return
+	}
+
+	go func(reqID string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = c.Call(ctx, "Fetch.continueWithAuth", map[string]interface{}{
+			"requestId": reqID,
+			"authChallengeResponse": map[string]interface{}{
+				"response": "ProvideCredentials",
+				"username": user,
+				"password": pass,
+			},
+		})
+	}(authEvent.RequestID)
+}
+
+// EnableProxyAuth configures CDP Fetch domain to automatically respond with proxy credentials.
+func (c *CDPClient) EnableProxyAuth(ctx context.Context, username, password string) error {
+	c.mu.Lock()
+	c.proxyUser = username
+	c.proxyPass = password
+	c.mu.Unlock()
+
+	_, err := c.Call(ctx, "Fetch.enable", map[string]interface{}{
+		"handleAuthRequests": true,
+	})
+	return err
 }
 
 // Call sends a CDP command and waits for the response.
@@ -261,6 +316,12 @@ func (c *CDPClient) Close() error {
 	c.closeOnce.Do(func() {
 		c.mu.Lock()
 		c.isClosed = true
+		for id, ch := range c.pending {
+			delete(c.pending, id)
+			if ch != nil {
+				close(ch)
+			}
+		}
 		c.mu.Unlock()
 
 		close(c.stopChan)
@@ -305,16 +366,26 @@ func QueryCDPVersion(port int) (*CDPVersion, error) {
 	return &version, nil
 }
 
-// FilterGoogleCookies filters and merges cookies for google.com and gemini.google.com into a header string.
+// FilterGoogleCookies filters and merges cookies for google.com, flow.google.com and gemini.google.com into a header string.
 func FilterGoogleCookies(cookies []CDPCookie) (headerString string, hasPSID bool, hasPSIDTS bool) {
 	cookieMap := make(map[string]string)
+	cookieScores := make(map[string]int)
 
 	for _, c := range cookies {
 		domain := strings.ToLower(strings.TrimPrefix(c.Domain, "."))
 		if strings.Contains(domain, "google.com") || strings.Contains(domain, "google") {
 			if c.Name != "" && c.Value != "" {
-				// Keep newest / more specific domain
-				cookieMap[c.Name] = c.Value
+				score := 1
+				if strings.HasPrefix(domain, "accounts.") {
+					score = 2
+				} else if strings.HasPrefix(domain, "flow.") || strings.HasPrefix(domain, "gemini.") {
+					score = 3
+				}
+
+				if score >= cookieScores[c.Name] {
+					cookieMap[c.Name] = c.Value
+					cookieScores[c.Name] = score
+				}
 			}
 		}
 	}

@@ -13,8 +13,8 @@ import {
   ImportAccountsBackupDialog,
   ExportAccountsBackupDialog,
   SaveGoogleAccountProxy,
-  UpdateGoogleAccountFeatures,
-  BulkUpdateGoogleAccountFeatures,
+  TestGoogleAccount,
+  UpdateGoogleAccountCredits,
 } from "@/../wailsjs/go/main/App";
 import { ActionConfirmDialog } from "@/components/common/ActionConfirmDialog";
 import { LoginProgressModal } from "@/components/accounts/LoginProgressModal";
@@ -90,14 +90,17 @@ export function AccountsPage() {
   }, []);
 
   // Handler: Start Interactive Real Chrome Login
-  const handleStartAddAccount = async (service: "gemini" | "flow" = "flow") => {
+  const handleStartAddAccount = async (
+    service: "gemini" | "flow" = "flow",
+    proxy: string = ""
+  ) => {
     try {
       setIsLoginModalOpen(true);
       setLoginStep("INITIALIZING");
       setLoginMessage("Đang quét tìm Google Chrome thật trên máy tính của bạn...");
       setLoginError(undefined);
 
-      const res = await StartGoogleLogin(service);
+      const res = await StartGoogleLogin(service, proxy);
       setActiveSessionId(res.sessionId);
       setLoginStep(res.step);
       setLoginMessage(res.message);
@@ -177,84 +180,59 @@ export function AccountsPage() {
     }
   };
 
-  // Handler: Toggle Image feature for single account (Persist to SQLite)
-  const handleToggleImage = async (id: string, imageEnabled: boolean) => {
-    const acc = accounts.find((a) => a.id === id);
-    if (!acc) return;
-    const videoEnabled = acc.videoEnabled ?? true;
-
-    // Optimistic update
-    setAccounts((prev) =>
-      prev.map((a) => (a.id === id ? { ...a, imageEnabled } : a))
-    );
-
-    try {
-      await UpdateGoogleAccountFeatures(id, imageEnabled, videoEnabled);
-    } catch (err: any) {
-      toast.error("Không thể lưu cài đặt Ảnh", err?.message || String(err));
-      fetchAccounts();
-    }
-  };
-
-  // Handler: Toggle Video feature for single account (Persist to SQLite)
-  const handleToggleVideo = async (id: string, videoEnabled: boolean) => {
-    const acc = accounts.find((a) => a.id === id);
-    if (!acc) return;
-    const imageEnabled = acc.imageEnabled ?? true;
-
-    // Optimistic update
-    setAccounts((prev) =>
-      prev.map((a) => (a.id === id ? { ...a, videoEnabled } : a))
-    );
-
-    try {
-      await UpdateGoogleAccountFeatures(id, imageEnabled, videoEnabled);
-    } catch (err: any) {
-      toast.error("Không thể lưu cài đặt Video", err?.message || String(err));
-      fetchAccounts();
-    }
-  };
-
-  // Handler: Bulk toggle feature for all accounts (Persist to SQLite)
-  const handleBulkToggleFeature = async (feature: "image" | "video", enabled: boolean) => {
-    // Optimistic update
-    setAccounts((prev) =>
-      prev.map((a) =>
-        feature === "image" ? { ...a, imageEnabled: enabled } : { ...a, videoEnabled: enabled }
-      )
-    );
-
-    try {
-      await BulkUpdateGoogleAccountFeatures(feature, enabled);
-      toast.success(
-        `Đã ${enabled ? "bật" : "tắt"} tạo ${feature === "image" ? "ảnh" : "video"} cho tất cả tài khoản`
-      );
-    } catch (err: any) {
-      toast.error("Lỗi cập nhật hàng loạt", err?.message || String(err));
-      fetchAccounts();
-    }
-  };
+  // Track which account is actively refreshing for realtime UI feedback
+  const [refreshingAccountId, setRefreshingAccountId] = useState<string | null>(null);
 
   // Handler: Refresh Single Account
   const handleRefreshAccount = async (id: string) => {
+    setRefreshingAccountId(id);
     try {
-      await RefreshGoogleAccount(id);
-      toast.success("Làm mới thành công", "Session token đã được cập nhật qua Chrome headless!");
-      fetchAccounts();
+      const updated = await RefreshGoogleAccount(id);
+      if (updated) {
+        setAccounts((prev) => prev.map((item) => (item.id === id ? updated : item)));
+      }
+      toast.success("Làm mới thành công", "Session token và số dư credit đã được cập nhật!");
     } catch (err: any) {
       toast.error("Làm mới thất bại", err?.message || String(err));
+      fetchAccounts();
+    } finally {
+      setRefreshingAccountId(null);
     }
   };
 
-  // Handler: Refresh All Accounts
+  // Handler: Refresh All Accounts sequentially with live realtime feedback
   const handleRefreshAll = async () => {
-    try {
-      await RefreshAllGoogleAccounts();
-      toast.success("Làm mới tất cả", "Đã cập nhật phiên cho toàn bộ các tài khoản đang hoạt động!");
-      fetchAccounts();
-    } catch (err: any) {
-      toast.error("Lỗi làm mới hàng loạt", err?.message || String(err));
-      fetchAccounts();
+    const activeList = accounts.filter((a) => a.status !== "DISABLED");
+    if (activeList.length === 0) {
+      toast.info("Không có tài khoản", "Không có tài khoản nào đang hoạt động để làm mới.");
+      return;
+    }
+
+    let successCount = 0;
+    let failCount = 0;
+
+    for (let i = 0; i < activeList.length; i++) {
+      const acc = activeList[i];
+      setRefreshingAccountId(acc.id);
+      try {
+        const updated = await RefreshGoogleAccount(acc.id);
+        if (updated) {
+          setAccounts((prev) => prev.map((item) => (item.id === acc.id ? updated : item)));
+        }
+        successCount++;
+      } catch (err: any) {
+        failCount++;
+        console.error(`Lỗi làm mới ${acc.email}:`, err);
+      }
+    }
+
+    setRefreshingAccountId(null);
+    fetchAccounts();
+
+    if (failCount === 0) {
+      toast.success("Làm mới tất cả thành công", `Đã cập nhật realtime toàn bộ ${successCount} tài khoản!`);
+    } else {
+      toast.warning("Làm mới hoàn tất", `Đã cập nhật ${successCount}/${activeList.length} tài khoản (${failCount} lỗi).`);
     }
   };
 
@@ -284,6 +262,28 @@ export function AccountsPage() {
     }
   };
 
+  // Handler: Test Account Connectivity & Session
+  const handleTestAccount = async (id: string) => {
+    try {
+      toast.info("Đang kiểm tra", "Đang gửi yêu cầu kiểm tra phiên đăng nhập qua Proxy/Mạng...");
+      const res = await TestGoogleAccount(id);
+      if (res && res.success) {
+        toast.success(
+          "Phiên làm việc hợp lệ",
+          `${res.message || "Tài khoản kết nối tốt!"} (Độ trễ: ${res.latencyMs}ms)`
+        );
+      } else {
+        toast.error(
+          "Phiên làm việc không hợp lệ",
+          res?.message || "Phiên đăng nhập đã hết hạn hoặc không kết nối được."
+        );
+      }
+      fetchAccounts();
+    } catch (err: any) {
+      toast.error("Kiểm tra thất bại", err?.message || String(err));
+    }
+  };
+
   // Handler: Save Proxy
   const handleSaveProxy = async (accountId: string, proxy: string) => {
     const next = { ...proxies, [accountId]: proxy };
@@ -292,9 +292,22 @@ export function AccountsPage() {
 
     try {
       await SaveGoogleAccountProxy(accountId, proxy);
-    } catch {}
+      toast.success("Đã lưu Proxy", proxy ? `Proxy đã được lưu: ${proxy}` : "Đã chuyển về kết nối trực tiếp.");
+      fetchAccounts();
+    } catch (err: any) {
+      toast.error("Lỗi khi lưu Proxy", err?.message || String(err));
+    }
+  };
 
-    toast.success("Đã lưu Proxy", proxy ? `Proxy đã được lưu: ${proxy}` : "Đã chuyển về kết nối trực tiếp.");
+  // Handler: Update Account Credits Directly
+  const handleUpdateCredits = async (accountId: string, credits: number) => {
+    try {
+      await UpdateGoogleAccountCredits(accountId, credits);
+      toast.success("Đã cập nhật số tín dụng", `Số tín dụng mới: ${credits.toLocaleString()}`);
+      fetchAccounts();
+    } catch (err: any) {
+      toast.error("Lỗi khi cập nhật tín dụng", err?.message || String(err));
+    }
   };
 
   // Handler: Export Accounts Backup
@@ -349,21 +362,21 @@ export function AccountsPage() {
         isExporting={isExporting}
         isImporting={isImporting}
         onToggleActive={handleToggleActive}
-        onToggleImage={handleToggleImage}
-        onToggleVideo={handleToggleVideo}
-        onBulkToggleFeature={handleBulkToggleFeature}
         onRefreshAccount={handleRefreshAccount}
+        onTestAccount={handleTestAccount}
         onOpenBrowser={handleOpenAccountBrowser}
         onDeleteAccount={(id) => setDeleteTargetId(id)}
         onOpenProxyModal={(acc) => setProxyTargetAccount(acc)}
+        onUpdateCredits={handleUpdateCredits}
         proxies={proxies}
+        refreshingAccountId={refreshingAccountId}
       />
 
       {/* Add Account Modal (Chrome Login + Manual Cookie) */}
       <AddAccountModal
         isOpen={isAddAccountModalOpen}
         onClose={() => setIsAddAccountModalOpen(false)}
-        onStartChromeLogin={(service) => handleStartAddAccount(service)}
+        onStartChromeLogin={(service, proxy) => handleStartAddAccount(service, proxy)}
         onSuccessManual={fetchAccounts}
       />
 

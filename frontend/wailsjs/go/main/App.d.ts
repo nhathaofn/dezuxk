@@ -46,7 +46,7 @@ export function SaveGoogleAccountProxy(arg1:string,arg2:string):Promise<void>;
 
 export function StartGateway(arg1:number):Promise<models.GatewayStatus>;
 
-export function StartGoogleLogin(arg1:string):Promise<models.LoginSessionStatus>;
+export function StartGoogleLogin(arg1:string,arg2:string):Promise<models.LoginSessionStatus>;
 
 export function StopGateway():Promise<models.GatewayStatus>;
 
@@ -59,5 +59,7 @@ export function ToggleGateway():Promise<models.GatewayStatus>;
 export function ToggleGoogleAccount(arg1:string,arg2:boolean):Promise<models.GoogleAccountResponse>;
 
 export function UpdateGatewayPort(arg1:number):Promise<models.GatewayStatus>;
+
+export function UpdateGoogleAccountCredits(arg1:string,arg2:number):Promise<void>;
 
 export function UpdateGoogleAccountFeatures(arg1:string,arg2:boolean,arg3:boolean):Promise<void>;

@@ -38,12 +38,9 @@ func (a *GoogleAccount) ToResponse() *GoogleAccountResponse {
 
 	tier := a.Tier
 	if tier == "" {
-		tier = "PRO"
+		tier = "FREE"
 	}
 	credits := a.Credits
-	if credits == 0 && (a.Status == "ACTIVE" || a.Status == "") {
-		credits = 1050
-	}
 
 	// No mock cookie preview string
 	cookiePreview := ""

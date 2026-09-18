@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"dezuxk/internal/db"
@@ -26,6 +27,7 @@ type AccountService struct {
 	loginManager    *chrome.LoginManager
 	keepAliveWorker *chrome.KeepAliveWorker
 	baseDataDir     string
+	accountLocks    sync.Map // key: accountID, value: *sync.Mutex
 }
 
 // NewAccountService initializes AccountService and its sub-components.
@@ -47,6 +49,11 @@ func NewAccountService(database *db.DB, baseDataDir string) *AccountService {
 		keepAliveWorker: worker,
 		baseDataDir:     baseDataDir,
 	}
+}
+
+func (s *AccountService) getAccountLock(accountID string) *sync.Mutex {
+	lock, _ := s.accountLocks.LoadOrStore(accountID, &sync.Mutex{})
+	return lock.(*sync.Mutex)
 }
 
 // StartBackgroundWorkers starts periodic background maintenance tasks.
@@ -97,11 +104,11 @@ func (s *AccountService) GetAccount(accountID string) (*models.GoogleAccountResp
 }
 
 // StartLogin begins an interactive login session using the system's real Chrome.
-func (s *AccountService) StartLogin(service string) (*models.LoginSessionStatus, error) {
+func (s *AccountService) StartLogin(service, proxy string) (*models.LoginSessionStatus, error) {
 	if s.loginManager == nil {
 		return nil, errors.New("login manager not initialized")
 	}
-	return s.loginManager.StartLogin(service)
+	return s.loginManager.StartLogin(service, proxy)
 }
 
 // GetLoginStatus returns the live status of an ongoing login session.
@@ -154,6 +161,12 @@ func (s *AccountService) RefreshSession(accountID string) (*models.GoogleAccount
 		return nil, err
 	}
 
+	lock := s.getAccountLock(accountID)
+	if !lock.TryLock() {
+		return nil, fmt.Errorf("tài khoản %s đang được mở hoặc đang được làm mới, vui lòng thử lại sau", acc.Email)
+	}
+	defer lock.Unlock()
+
 	if err := s.keepAliveWorker.RefreshAccount(acc); err != nil {
 		return nil, fmt.Errorf("làm mới phiên thất bại: %w", err)
 	}
@@ -166,7 +179,7 @@ func (s *AccountService) RefreshSession(accountID string) (*models.GoogleAccount
 	return updated.ToResponse(), nil
 }
 
-// TestSession verifies the account's credentials against an upstream Google endpoint.
+// TestSession verifies the account's credentials against an upstream Google endpoint using the account's proxy if configured.
 func (s *AccountService) TestSession(accountID string) (*models.AccountTestResult, error) {
 	if s.database == nil {
 		return nil, errors.New("database not initialized")
@@ -179,9 +192,24 @@ func (s *AccountService) TestSession(accountID string) (*models.AccountTestResul
 
 	start := time.Now()
 
-	// Perform a lightweight probe to Gemini Web using the stored cookies
+	transport := &http.Transport{}
+	if acc.Proxy != "" {
+		serverFlag, user, pass := chrome.FormatChromeProxyFlag(acc.Proxy)
+		if serverFlag != "" {
+			proxyURL, err := url.Parse(serverFlag)
+			if err == nil {
+				if user != "" && proxyURL.User == nil {
+					proxyURL.User = url.UserPassword(user, pass)
+				}
+				transport.Proxy = http.ProxyURL(proxyURL)
+			}
+		}
+	}
+
+	// Perform a lightweight probe to Google Flow using the stored cookies and proxy
 	client := &http.Client{
-		Timeout: 10 * time.Second,
+		Transport: transport,
+		Timeout:   12 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if strings.Contains(req.URL.String(), "accounts.google.com") {
 				return http.ErrUseLastResponse
@@ -252,6 +280,12 @@ func (s *AccountService) OpenAccountBrowser(accountID string) error {
 	if err != nil {
 		return err
 	}
+
+	lock := s.getAccountLock(accountID)
+	if !lock.TryLock() {
+		return fmt.Errorf("tài khoản %s đang được mở hoặc làm mới", acc.Email)
+	}
+	defer lock.Unlock()
 
 	targetURL := "https://flow.google.com"
 	if strings.Contains(strings.ToLower(acc.Services), "gemini") && !strings.Contains(strings.ToLower(acc.Services), "flow") {
@@ -325,6 +359,17 @@ func (s *AccountService) BulkUpdateFeatures(feature string, enabled bool) error 
 	return s.database.BulkUpdateGoogleAccountFeatures(feature, enabled)
 }
 
+// UpdateCredits updates the credit count of an account directly.
+func (s *AccountService) UpdateCredits(accountID string, credits int) error {
+	if s.database == nil {
+		return errors.New("database not initialized")
+	}
+	if credits < 0 {
+		return errors.New("số tín dụng không được âm")
+	}
+	return s.database.UpdateGoogleAccountCredits(accountID, credits)
+}
+
 // AddAccountManual inserts a Google account provided manually with cookies/tokens.
 func (s *AccountService) AddAccountManual(input models.ManualAccountInput) (*models.GoogleAccountResponse, error) {
 	if s.database == nil {
@@ -354,11 +399,11 @@ func (s *AccountService) AddAccountManual(input models.ManualAccountInput) (*mod
 
 	tier := input.Tier
 	if tier == "" {
-		tier = "PRO"
+		tier = "FREE"
 	}
 	credits := input.Credits
-	if credits <= 0 {
-		credits = 1050
+	if credits < 0 {
+		credits = 0
 	}
 	service := input.Service
 	if service == "" {
@@ -527,7 +572,7 @@ func (s *AccountService) BulkAddAccounts(input models.BulkAddInput) (*models.Bul
 			Services:      service,
 			Status:        "ACTIVE",
 			Tier:          defaultTier,
-			Credits:       1050,
+			Credits:       0,
 			Proxy:         item.Proxy,
 			Password:      item.Password,
 			RecoveryEmail: item.RecoveryEmail,
@@ -944,11 +989,11 @@ func (s *AccountService) ImportGLabsBackup(backupPath string) (*models.RestoreRe
 
 		tier := raw.Tier
 		if tier == "" {
-			tier = "PRO"
+			tier = "FREE"
 		}
 		credits := raw.Credits
-		if credits == 0 {
-			credits = 1050
+		if credits < 0 {
+			credits = 0
 		}
 		proxyVal := ""
 		if raw.Proxy != nil {

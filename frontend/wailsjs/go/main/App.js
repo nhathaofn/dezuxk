@@ -90,8 +90,8 @@ export function StartGateway(arg1) {
   return window['go']['main']['App']['StartGateway'](arg1);
 }
 
-export function StartGoogleLogin(arg1) {
-  return window['go']['main']['App']['StartGoogleLogin'](arg1);
+export function StartGoogleLogin(arg1, arg2) {
+  return window['go']['main']['App']['StartGoogleLogin'](arg1, arg2);
 }
 
 export function StopGateway() {
@@ -116,6 +116,10 @@ export function ToggleGoogleAccount(arg1, arg2) {
 
 export function UpdateGatewayPort(arg1) {
   return window['go']['main']['App']['UpdateGatewayPort'](arg1);
+}
+
+export function UpdateGoogleAccountCredits(arg1, arg2) {
+  return window['go']['main']['App']['UpdateGoogleAccountCredits'](arg1, arg2);
 }
 
 export function UpdateGoogleAccountFeatures(arg1, arg2, arg3) {

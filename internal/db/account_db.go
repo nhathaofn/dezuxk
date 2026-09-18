@@ -22,10 +22,7 @@ func (d *DB) CreateGoogleAccount(acc *models.GoogleAccount) error {
 	acc.UpdatedAt = now
 
 	if acc.Tier == "" {
-		acc.Tier = "PRO"
-	}
-	if acc.Credits == 0 && (acc.Status == "ACTIVE" || acc.Status == "") {
-		acc.Credits = 1050
+		acc.Tier = "FREE"
 	}
 
 	query := `INSERT INTO google_accounts (
@@ -90,7 +87,7 @@ func (d *DB) UpsertGoogleAccount(acc *models.GoogleAccount) error {
 			cookies = ?,
 			snlm0e_token = CASE WHEN ? != '' THEN ? ELSE snlm0e_token END,
 			tier = CASE WHEN ? != '' THEN ? ELSE tier END,
-			credits = CASE WHEN ? > 0 THEN ? ELSE credits END,
+			credits = CASE WHEN ? >= 0 THEN ? ELSE credits END,
 			proxy = CASE WHEN ? != '' THEN ? ELSE proxy END,
 			status = ?,
 			services = ?,
@@ -122,7 +119,7 @@ func (d *DB) UpsertGoogleAccount(acc *models.GoogleAccount) error {
 // GetGoogleAccountByID retrieves a single Google account by its primary key ID.
 func (d *DB) GetGoogleAccountByID(id string) (*models.GoogleAccount, error) {
 	query := `SELECT id, email, name, avatar_url, profile_dir, cookies, snlm0e_token,
-		services, status, COALESCE(tier, 'PRO'), COALESCE(credits, 1050), COALESCE(proxy, ''),
+		services, status, COALESCE(tier, 'FREE'), COALESCE(credits, 0), COALESCE(proxy, ''),
 		COALESCE(image_enabled, 1), COALESCE(video_enabled, 1), COALESCE(user_agent, ''),
 		COALESCE(last_error, ''), COALESCE(last_refresh_at, ''),
 		created_at, updated_at
@@ -169,7 +166,7 @@ func (d *DB) GetGoogleAccountByID(id string) (*models.GoogleAccount, error) {
 // GetGoogleAccountByEmail retrieves an account by email address.
 func (d *DB) GetGoogleAccountByEmail(email string) (*models.GoogleAccount, error) {
 	query := `SELECT id, email, name, avatar_url, profile_dir, cookies, snlm0e_token,
-		services, status, COALESCE(tier, 'PRO'), COALESCE(credits, 1050), COALESCE(proxy, ''),
+		services, status, COALESCE(tier, 'FREE'), COALESCE(credits, 0), COALESCE(proxy, ''),
 		COALESCE(image_enabled, 1), COALESCE(video_enabled, 1), COALESCE(user_agent, ''),
 		COALESCE(last_error, ''), COALESCE(last_refresh_at, ''),
 		created_at, updated_at
@@ -216,7 +213,7 @@ func (d *DB) GetGoogleAccountByEmail(email string) (*models.GoogleAccount, error
 // ListGoogleAccounts returns all Google accounts ordered by creation time descending.
 func (d *DB) ListGoogleAccounts() ([]*models.GoogleAccount, error) {
 	query := `SELECT id, email, name, avatar_url, profile_dir, cookies, snlm0e_token,
-		services, status, COALESCE(tier, 'PRO'), COALESCE(credits, 1050), COALESCE(proxy, ''),
+		services, status, COALESCE(tier, 'FREE'), COALESCE(credits, 0), COALESCE(proxy, ''),
 		COALESCE(image_enabled, 1), COALESCE(video_enabled, 1), COALESCE(user_agent, ''),
 		COALESCE(last_error, ''), COALESCE(last_refresh_at, ''),
 		created_at, updated_at
@@ -270,19 +267,26 @@ func (d *DB) ListGoogleAccounts() ([]*models.GoogleAccount, error) {
 
 // UpdateGoogleAccountCookies updates cookies, CSRF token, and touches last_refresh_at.
 func (d *DB) UpdateGoogleAccountCookies(id, cookies, snlm0e string) error {
+	return d.UpdateGoogleAccountSessionData(id, cookies, snlm0e, -1, "")
+}
+
+// UpdateGoogleAccountSessionData updates cookies, CSRF token, credits, tier, and touches last_refresh_at.
+func (d *DB) UpdateGoogleAccountSessionData(id, cookies, snlm0e string, credits int, tier string) error {
 	now := time.Now().UTC().Format("2006-01-02 15:04:05")
 	query := `UPDATE google_accounts SET
 		cookies = ?,
 		snlm0e_token = CASE WHEN ? != '' THEN ? ELSE snlm0e_token END,
+		credits = CASE WHEN ? >= 0 THEN ? ELSE credits END,
+		tier = CASE WHEN ? != '' THEN ? ELSE tier END,
 		status = 'ACTIVE',
 		last_error = '',
 		last_refresh_at = ?,
 		updated_at = ?
 	WHERE id = ?`
 
-	res, err := d.conn.Exec(query, cookies, snlm0e, snlm0e, now, now, id)
+	res, err := d.conn.Exec(query, cookies, snlm0e, snlm0e, credits, credits, tier, tier, now, now, id)
 	if err != nil {
-		return fmt.Errorf("failed to update cookies for account %s: %w", id, err)
+		return fmt.Errorf("failed to update session data for account %s: %w", id, err)
 	}
 
 	rows, err := res.RowsAffected()
@@ -293,6 +297,24 @@ func (d *DB) UpdateGoogleAccountCookies(id, cookies, snlm0e string) error {
 		return errors.New("google account not found")
 	}
 
+	return nil
+}
+
+// UpdateGoogleAccountCredits updates the credit count of an account directly.
+func (d *DB) UpdateGoogleAccountCredits(id string, credits int) error {
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	query := `UPDATE google_accounts SET credits = ?, updated_at = ? WHERE id = ?`
+	res, err := d.conn.Exec(query, credits, now, id)
+	if err != nil {
+		return fmt.Errorf("failed to update credits for account %s: %w", id, err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return errors.New("google account not found")
+	}
 	return nil
 }
 

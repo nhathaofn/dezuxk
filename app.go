@@ -214,11 +214,11 @@ func (a *App) ListGoogleAccounts() ([]*models.GoogleAccountResponse, error) {
 }
 
 // StartGoogleLogin initiates an interactive Chrome login session.
-func (a *App) StartGoogleLogin(service string) (*models.LoginSessionStatus, error) {
+func (a *App) StartGoogleLogin(service, proxy string) (*models.LoginSessionStatus, error) {
 	if a.accountService == nil {
 		return nil, errors.New("account service not initialized")
 	}
-	return a.accountService.StartLogin(service)
+	return a.accountService.StartLogin(service, proxy)
 }
 
 // GetGoogleLoginStatus queries the current progress of an active login session.
@@ -387,6 +387,15 @@ func (a *App) BulkUpdateGoogleAccountFeatures(feature string, enabled bool) erro
 	}
 	return a.accountService.BulkUpdateFeatures(feature, enabled)
 }
+
+// UpdateGoogleAccountCredits updates the credit balance of an account directly.
+func (a *App) UpdateGoogleAccountCredits(accountID string, credits int) error {
+	if a.accountService == nil {
+		return errors.New("account service not initialized")
+	}
+	return a.accountService.UpdateCredits(accountID, credits)
+}
+
 
 
 

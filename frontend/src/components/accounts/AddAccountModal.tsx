@@ -10,7 +10,7 @@ import { toast } from "@/lib/toast";
 interface AddAccountModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onStartChromeLogin: (service: "flow" | "gemini") => void;
+  onStartChromeLogin: (service: "flow" | "gemini", proxy: string) => void;
   onSuccessManual: () => void;
 }
 
@@ -22,6 +22,7 @@ export function AddAccountModal({
 }: AddAccountModalProps) {
   const [tab, setTab] = useState<"chrome" | "cookie">("chrome");
   const [service, setService] = useState<"flow" | "gemini">("flow");
+  const [chromeProxy, setChromeProxy] = useState("");
 
   // Manual Cookie form state
   const [email, setEmail] = useState("");
@@ -29,6 +30,7 @@ export function AddAccountModal({
   const [snlm0e, setSnlm0e] = useState("");
   const [proxy, setProxy] = useState("");
   const [tier, setTier] = useState("PRO");
+  const [creditsInput, setCreditsInput] = useState("0");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   React.useEffect(() => {
@@ -37,6 +39,8 @@ export function AddAccountModal({
       setSnlm0e("");
       setEmail("");
       setProxy("");
+      setChromeProxy("");
+      setCreditsInput("0");
       setIsSubmitting(false);
     }
   }, [isOpen]);
@@ -56,7 +60,7 @@ export function AddAccountModal({
         snlm0eToken: snlm0e.trim(),
         proxy: proxy.trim(),
         tier,
-        credits: 1050,
+        credits: parseInt(creditsInput, 10) || 0,
         service,
       });
 
@@ -136,7 +140,7 @@ export function AddAccountModal({
                   }`}
                 >
                   <span className="text-xs font-bold text-primary">Flow Google (Tạo video/ảnh)</span>
-                  <span className="text-[10px] text-zinc-400 mt-0.5">flow.google.com (1050 Credits PRO)</span>
+                  <span className="text-[10px] text-zinc-400 mt-0.5">flow.google.com (Veo & Imagen)</span>
                 </button>
 
                 <button
@@ -154,6 +158,21 @@ export function AddAccountModal({
               </div>
             </div>
 
+            <div>
+              <label className="text-xs font-semibold text-zinc-300 block mb-1.5">
+                Proxy cho trình duyệt (tùy chọn):
+              </label>
+              <Input
+                value={chromeProxy}
+                onChange={(e) => setChromeProxy(e.target.value)}
+                placeholder="vd: http://103.14.22.1:8080 hoặc ip:port:user:pass"
+                className="bg-zinc-900/80 border-zinc-700 text-zinc-100 text-xs font-mono placeholder:text-zinc-600"
+              />
+              <p className="text-[11px] text-zinc-400 mt-1">
+                Chrome sẽ mở qua Proxy này để đăng nhập, hạn chế bị Google checkpoint vị trí.
+              </p>
+            </div>
+
             <div className="flex items-center justify-end gap-2 pt-3 border-t border-zinc-800">
               <Button
                 type="button"
@@ -169,7 +188,7 @@ export function AddAccountModal({
                 size="sm"
                 onClick={() => {
                   onClose();
-                  onStartChromeLogin(service);
+                  onStartChromeLogin(service, chromeProxy.trim());
                 }}
                 className="text-xs bg-primary hover:bg-primary/90 text-primary-foreground font-semibold cursor-pointer"
               >
@@ -245,9 +264,24 @@ export function AddAccountModal({
                   onChange={(e) => setTier(e.target.value)}
                   className="w-full h-8 rounded-md bg-zinc-900/80 border border-zinc-700 text-zinc-100 text-xs px-2 focus:outline-hidden focus:border-primary"
                 >
-                  <option value="PRO">PRO (1050 Credits)</option>
+                  <option value="PRO">PRO</option>
                   <option value="FREE">FREE</option>
+                  <option value="ULTRA">ULTRA</option>
                 </select>
+              </div>
+
+              <div>
+                <label className="text-xs font-medium text-zinc-300 block mb-1">
+                  Số Tín Dụng Ban Đầu:
+                </label>
+                <Input
+                  type="number"
+                  min="0"
+                  value={creditsInput}
+                  onChange={(e) => setCreditsInput(e.target.value)}
+                  placeholder="0"
+                  className="bg-zinc-900/80 border-zinc-700 text-zinc-100 text-xs font-mono placeholder:text-zinc-600"
+                />
               </div>
             </div>
 

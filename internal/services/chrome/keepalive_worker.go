@@ -2,9 +2,12 @@ package chrome
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -139,14 +142,25 @@ func (w *KeepAliveWorker) RefreshAccount(acc *models.GoogleAccount) error {
 		"--no-first-run",
 		"--no-default-browser-check",
 		"--disable-gpu",
+		"--disable-blink-features=AutomationControlled",
+		"--window-size=1280,800",
 	}
 
+	var proxyUser, proxyPass string
 	if acc.Proxy != "" {
-		serverFlag, _, _ := FormatChromeProxyFlag(acc.Proxy)
+		serverFlag, u, p := FormatChromeProxyFlag(acc.Proxy)
 		if serverFlag != "" {
 			args = append(args, fmt.Sprintf("--proxy-server=%s", serverFlag))
+			proxyUser = u
+			proxyPass = p
 		}
 	}
+
+	// Remove stale Chromium lockfiles if left behind by an unclean shutdown
+	_ = os.Remove(filepath.Join(acc.ProfileDir, "lockfile"))
+	_ = os.Remove(filepath.Join(acc.ProfileDir, "SingletonLock"))
+	_ = os.Remove(filepath.Join(acc.ProfileDir, "SingletonCookie"))
+	_ = os.Remove(filepath.Join(acc.ProfileDir, "SingletonSocket"))
 
 	args = append(args, targetURL)
 
@@ -157,7 +171,7 @@ func (w *KeepAliveWorker) RefreshAccount(acc *models.GoogleAccount) error {
 
 	defer func() {
 		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
+			KillProcessTree(cmd.Process.Pid)
 		}
 	}()
 
@@ -165,7 +179,7 @@ func (w *KeepAliveWorker) RefreshAccount(acc *models.GoogleAccount) error {
 	var target *CDPTarget
 	startWait := time.Now()
 	for {
-		if time.Since(startWait) > 12*time.Second {
+		if time.Since(startWait) > 15*time.Second {
 			return fmt.Errorf("timeout waiting for headless chrome debug port")
 		}
 
@@ -190,6 +204,11 @@ func (w *KeepAliveWorker) RefreshAccount(acc *models.GoogleAccount) error {
 	}
 	defer client.Close()
 
+	// Enable proxy authentication via CDP if credentials exist
+	if proxyUser != "" && proxyPass != "" {
+		_ = client.EnableProxyAuth(ctx, proxyUser, proxyPass)
+	}
+
 	// Let Chrome interact silently for 5 seconds to rotate __Secure-1PSIDTS
 	time.Sleep(5 * time.Second)
 
@@ -205,21 +224,165 @@ func (w *KeepAliveWorker) RefreshAccount(acc *models.GoogleAccount) error {
 		return fmt.Errorf("session expired on Google")
 	}
 
-	// Fetch fresh SNlM0e token
-	snlm0e, _ := client.EvaluateJS(ctx, `(function() {
-		if (window.WIZ_global_data && window.WIZ_global_data.SNlM0e) {
-			return window.WIZ_global_data.SNlM0e;
-		}
-		var match = document.documentElement.innerHTML.match(/"SNlM0e":"([^"]+)"/);
-		if (match && match[1]) return match[1];
-		return "";
-	})()`)
+	// Fetch fresh SNlM0e token if this is a Gemini target
+	snlm0e := ""
+	if strings.Contains(targetURL, "gemini.google.com") {
+		snlm0e, _ = client.EvaluateJS(ctx, `(function() {
+			if (window.WIZ_global_data && window.WIZ_global_data.SNlM0e) {
+				return window.WIZ_global_data.SNlM0e;
+			}
+			var match = document.documentElement.innerHTML.match(/"SNlM0e":"([^"]+)"/);
+			if (match && match[1]) return match[1];
+			return "";
+		})()`)
+	}
 
-	// Persist fresh tokens
-	if err := w.database.UpdateGoogleAccountCookies(acc.ID, cookieHeader, snlm0e); err != nil {
+	// Extract dynamic credits and tier if available from Flow/Labs
+	dynCredits, dynTier := ExtractAccountCreditsAndTier(ctx, client)
+	if dynCredits >= 0 {
+		log.Printf("[KeepAliveWorker] Live credits detected for %s: %d (tier: %s)\n", acc.Email, dynCredits, dynTier)
+	}
+
+	// Persist fresh tokens, credits and tier
+	if err := w.database.UpdateGoogleAccountSessionData(acc.ID, cookieHeader, snlm0e, dynCredits, dynTier); err != nil {
 		return fmt.Errorf("failed to persist refreshed cookies: %w", err)
 	}
 
 	_ = client.CloseBrowser(ctx)
 	return nil
+}
+
+// ExtractAccountCreditsAndTier executes JavaScript in the current page session to probe for live credits and plan tier.
+func ExtractAccountCreditsAndTier(ctx context.Context, client *CDPClient) (int, string) {
+	if client == nil {
+		return -1, ""
+	}
+
+	jsExpr := `(async function() {
+		var result = { credits: -1, tier: "" };
+
+		function scanTextForCredits(root) {
+			try {
+				var walker = document.createTreeWalker(root || document.body, NodeFilter.SHOW_TEXT, null, false);
+				var node;
+				while (node = walker.nextNode()) {
+					var txt = (node.nodeValue || "").trim();
+					if (!txt || (node.parentElement && node.parentElement.matches("style, script, noscript"))) continue;
+					var m = txt.match(/([\d,]+)\s*(?:Google\s*Flow\s*)?(?:credits?|t\xEDn\s*d\u1EE5ng)/i) ||
+					        txt.match(/(?:credits?|t\xEDn\s*d\u1EE5ng)\s*:\s*([\d,]+)/i);
+					if (m && m[1]) {
+						var val = parseInt(m[1].replace(/,/g, ""), 10);
+						if (!isNaN(val) && val >= 0 && val < 10000000) {
+							return val;
+						}
+					}
+				}
+			} catch (e) {}
+			return -1;
+		}
+
+		// 1. Initial scan in current DOM
+		var initCredits = scanTextForCredits(document.body);
+		if (initCredits >= 0) {
+			result.credits = initCredits;
+		}
+
+		// Check for PRO badge in header or nav
+		try {
+			var headerTexts = Array.from(document.querySelectorAll("header, nav, [role=banner], [class*='header']"))
+				.map(el => el.innerText || "").join(" ");
+			if (/\bPRO\b/.test(headerTexts)) {
+				result.tier = "PRO";
+			}
+		} catch (e) {}
+
+		// 2. Open Google Flow account avatar drawer to reveal live credits panel
+		try {
+			var avatar = document.querySelector("[aria-label*='Google Account'], [aria-label*='T\xE0i kho\u1EA3n Google'], [aria-label*='Google membership'], button.gb_d, img.gb_k");
+			if (!avatar) {
+				var allBtns = Array.from(document.querySelectorAll("button, [role=button]"));
+				avatar = allBtns.find(b => b.querySelector("img[src*='googleusercontent']"));
+			}
+
+			if (avatar) {
+				avatar.click();
+				await new Promise(r => setTimeout(r, 1200));
+
+				var drawerCredits = scanTextForCredits(document.body);
+				if (drawerCredits >= 0) {
+					result.credits = drawerCredits;
+				}
+
+				var bodyText = document.body.innerText || "";
+				if (bodyText.includes("Manage subscription") || /\bPRO\b/.test(bodyText)) {
+					result.tier = "PRO";
+				}
+			}
+		} catch (e) {}
+
+		// 3. Fallback for labs.google session endpoint
+		if (result.credits < 0) {
+			try {
+				var sessionRes = await fetch("https://labs.google/fx/api/auth/session", { credentials: "include" });
+				if (sessionRes.ok) {
+					var sessionData = await sessionRes.json();
+					if (sessionData && sessionData.access_token) {
+						var credRes = await fetch("https://aisandbox-pa.googleapis.com/v1/credits", {
+							headers: { "Authorization": "Bearer " + sessionData.access_token }
+						});
+						if (credRes.ok) {
+							var credData = await credRes.json();
+							if (typeof credData.credits === "number") {
+								result.credits = credData.credits;
+							} else if (typeof credData.subscriptionCredits === "number") {
+								result.credits = credData.subscriptionCredits;
+							}
+							if (credData.userPaygateTier) {
+								result.tier = String(credData.userPaygateTier).toUpperCase();
+							} else if (credData.serviceTier) {
+								result.tier = String(credData.serviceTier).toUpperCase();
+							}
+						}
+					}
+				}
+			} catch (e) {}
+		}
+
+		// 4. Fallback for __NEXT_DATA__
+		if (result.credits < 0) {
+			try {
+				if (window.__NEXT_DATA__ && window.__NEXT_DATA__.props) {
+					var propsStr = JSON.stringify(window.__NEXT_DATA__.props);
+					var cm = propsStr.match(/"credits":\s*(\d+)/i) || propsStr.match(/"subscriptionCredits":\s*(\d+)/i);
+					if (cm && cm[1]) {
+						result.credits = parseInt(cm[1], 10);
+					}
+					var tm = propsStr.match(/"(?:userPaygateTier|serviceTier|tier)":\s*"([^"]+)"/i);
+					if (tm && tm[1]) {
+						result.tier = tm[1].toUpperCase();
+					}
+				}
+			} catch (e) {}
+		}
+
+		return JSON.stringify(result);
+	})()`
+
+	evalCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	valStr, err := client.EvaluateJS(evalCtx, jsExpr)
+	if err != nil || valStr == "" {
+		return -1, ""
+	}
+
+	var parsed struct {
+		Credits int    `json:"credits"`
+		Tier    string `json:"tier"`
+	}
+	if err := json.Unmarshal([]byte(valStr), &parsed); err != nil {
+		return -1, ""
+	}
+
+	return parsed.Credits, parsed.Tier
 }

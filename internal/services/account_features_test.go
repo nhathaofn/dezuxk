@@ -137,3 +137,64 @@ func TestProxyParsing(t *testing.T) {
 		t.Errorf("user2/pass2 mismatch: got %s / %s", user2, pass2)
 	}
 }
+
+func TestDynamicCreditsAndTier(t *testing.T) {
+	tempDB := filepath.Join(t.TempDir(), "test_dyn.db")
+	database, err := db.InitDB(tempDB)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer database.Close()
+
+	svc := NewAccountService(database, t.TempDir())
+
+	// 1. Add account with 0 credits and FREE tier
+	res, err := svc.AddAccountManual(models.ManualAccountInput{
+		Email:   "zero_credit@gmail.com",
+		Cookies: "SID=abc;",
+		Tier:    "FREE",
+		Credits: 0,
+	})
+	if err != nil {
+		t.Fatalf("AddAccountManual failed: %v", err)
+	}
+
+	// Verify credits is strictly 0 and NOT forced to 1050
+	if res.Credits != 0 {
+		t.Errorf("expected 0 credits, got %d", res.Credits)
+	}
+	if res.Tier != "FREE" {
+		t.Errorf("expected FREE tier, got %s", res.Tier)
+	}
+
+	// 2. Test UpdateCredits method
+	if err := svc.UpdateCredits(res.ID, 3420); err != nil {
+		t.Fatalf("UpdateCredits failed: %v", err)
+	}
+
+	updatedAcc, err := database.GetGoogleAccountByID(res.ID)
+	if err != nil {
+		t.Fatalf("GetGoogleAccountByID failed: %v", err)
+	}
+	if updatedAcc.Credits != 3420 {
+		t.Errorf("expected 3420 credits after update, got %d", updatedAcc.Credits)
+	}
+
+	// 3. Test dynamic session update with new tier and credits
+	if err := database.UpdateGoogleAccountSessionData(res.ID, "SID=newcookie;", "", 7500, "ULTRA"); err != nil {
+		t.Fatalf("UpdateGoogleAccountSessionData failed: %v", err)
+	}
+
+	refreshedAcc, err := database.GetGoogleAccountByID(res.ID)
+	if err != nil {
+		t.Fatalf("GetGoogleAccountByID after session update failed: %v", err)
+	}
+	if refreshedAcc.Credits != 7500 {
+		t.Errorf("expected 7500 credits, got %d", refreshedAcc.Credits)
+	}
+	if refreshedAcc.Tier != "ULTRA" {
+		t.Errorf("expected ULTRA tier, got %s", refreshedAcc.Tier)
+	}
+}
+
+

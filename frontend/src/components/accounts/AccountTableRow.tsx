@@ -1,50 +1,77 @@
 import React, { useState } from "react";
 import { models } from "@/../wailsjs/go/models";
 import { ToggleSwitch } from "./ToggleSwitch";
-import { Check, RefreshCw, Globe, Trash2, Loader2, ExternalLink } from "lucide-react";
+import { RefreshCw, Globe, Trash2, Loader2, ExternalLink, ShieldCheck, Check, X, Edit2 } from "lucide-react";
 
 interface AccountTableRowProps {
   index: number;
   account: models.GoogleAccountResponse;
   isActive: boolean;
-  imageEnabled: boolean;
-  videoEnabled: boolean;
   proxyValue?: string;
   credit?: number;
   onToggleActive: (id: string, active: boolean) => void;
-  onToggleImage: (id: string, checked: boolean) => void;
-  onToggleVideo: (id: string, checked: boolean) => void;
   onRefresh: (id: string) => Promise<void>;
+  onTest: (id: string) => Promise<void>;
   onOpenProxyModal: (account: models.GoogleAccountResponse) => void;
   onOpenBrowser: (id: string) => Promise<void>;
   onDelete: (id: string) => void;
+  onUpdateCredits?: (id: string, credits: number) => Promise<void>;
+  isRefreshing?: boolean;
+}
+
+function formatSyncTime(dateStr?: string): string {
+  if (!dateStr) return "";
+  try {
+    // Backend lưu thời gian dạng UTC ("YYYY-MM-DD HH:mm:ss"), cần chuẩn hóa để JS nhận diện là UTC rồi đổi sang giờ máy cục bộ
+    const isoStr = dateStr.includes("T")
+      ? (dateStr.endsWith("Z") ? dateStr : `${dateStr}Z`)
+      : `${dateStr.replace(" ", "T")}Z`;
+    const d = new Date(isoStr);
+    if (!isNaN(d.getTime())) {
+      return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+    }
+  } catch {}
+  return dateStr.slice(11, 16);
 }
 
 export function AccountTableRow({
   index,
   account,
   isActive,
-  imageEnabled,
-  videoEnabled,
   proxyValue = "-",
   credit,
   onToggleActive,
-  onToggleImage,
-  onToggleVideo,
   onRefresh,
+  onTest,
   onOpenProxyModal,
   onOpenBrowser,
   onDelete,
+  onUpdateCredits,
+  isRefreshing: isRefreshingProp = false,
 }: AccountTableRowProps) {
-  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isLocalRefreshing, setIsLocalRefreshing] = useState(false);
+  const isRefreshing = isRefreshingProp || isLocalRefreshing;
   const [isOpeningBrowser, setIsOpeningBrowser] = useState(false);
+  const [isTesting, setIsTesting] = useState(false);
+  const [isEditingCredit, setIsEditingCredit] = useState(false);
+  const [editCreditValue, setEditCreditValue] = useState("");
+  const [isSavingCredit, setIsSavingCredit] = useState(false);
 
   const handleRefresh = async () => {
-    setIsRefreshing(true);
+    setIsLocalRefreshing(true);
     try {
       await onRefresh(account.id);
     } finally {
-      setIsRefreshing(false);
+      setIsLocalRefreshing(false);
+    }
+  };
+
+  const handleTest = async () => {
+    setIsTesting(true);
+    try {
+      await onTest(account.id);
+    } finally {
+      setIsTesting(false);
     }
   };
 
@@ -54,6 +81,25 @@ export function AccountTableRow({
       await onOpenBrowser(account.id);
     } finally {
       setIsOpeningBrowser(false);
+    }
+  };
+
+  const handleSaveCredit = async () => {
+    const val = parseInt(editCreditValue, 10);
+    if (isNaN(val) || val < 0) {
+      setIsEditingCredit(false);
+      return;
+    }
+    setIsSavingCredit(true);
+    try {
+      if (onUpdateCredits) {
+        await onUpdateCredits(account.id, val);
+      }
+      setIsEditingCredit(false);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsSavingCredit(false);
     }
   };
 
@@ -88,21 +134,21 @@ export function AccountTableRow({
     );
   }
 
-  // Real credits from database
-  const realCredits = account.credits !== undefined && account.credits !== null ? account.credits : (credit ?? 1050);
+  // Dynamic real credits from database
+  const realCredits = typeof account.credits === "number" ? account.credits : (typeof credit === "number" ? credit : 0);
   const displayCredits = realCredits.toLocaleString();
-  const displayTier = account.tier || "PRO";
+  const displayTier = account.tier || "FREE";
   const hasProxy = proxyValue && proxyValue !== "-";
 
   return (
     <tr className="border-b border-border/50 hover:bg-muted/40 transition-colors duration-100">
       {/* 1. STT */}
-      <td className="py-2 px-1 text-center text-xs font-medium text-muted-foreground select-none">
+      <td className="py-1.5 px-1 text-center text-xs font-medium text-muted-foreground select-none">
         {index}
       </td>
 
       {/* 2. TẮT/BẬT */}
-      <td className="py-2 px-0.5 text-center">
+      <td className="py-1.5 px-0.5 text-center">
         <div className="flex justify-center items-center">
           <ToggleSwitch
             size="sm"
@@ -112,53 +158,13 @@ export function AccountTableRow({
         </div>
       </td>
 
-      {/* 3. Ảnh Checkbox */}
-      <td className="py-2 px-0.5 text-center">
-        <div className="flex justify-center items-center">
-          <button
-            type="button"
-            role="checkbox"
-            aria-checked={imageEnabled}
-            onClick={() => onToggleImage(account.id, !imageEnabled)}
-            className={`flex size-4 items-center justify-center rounded cursor-pointer transition-colors border ${
-              imageEnabled
-                ? "bg-primary border-primary text-primary-foreground"
-                : "border-input bg-background hover:bg-muted"
-            }`}
-            title={imageEnabled ? "Đang bật tạo ảnh (nhấp để tắt)" : "Đang tắt tạo ảnh (nhấp để bật)"}
-          >
-            {imageEnabled && <Check className="size-3 stroke-[3]" />}
-          </button>
-        </div>
-      </td>
-
-      {/* 4. Video Checkbox */}
-      <td className="py-2 px-0.5 text-center">
-        <div className="flex justify-center items-center">
-          <button
-            type="button"
-            role="checkbox"
-            aria-checked={videoEnabled}
-            onClick={() => onToggleVideo(account.id, !videoEnabled)}
-            className={`flex size-4 items-center justify-center rounded cursor-pointer transition-colors border ${
-              videoEnabled
-                ? "bg-primary border-primary text-primary-foreground"
-                : "border-input bg-background hover:bg-muted"
-            }`}
-            title={videoEnabled ? "Đang bật tạo video (nhấp để tắt)" : "Đang tắt tạo video (nhấp để bật)"}
-          >
-            {videoEnabled && <Check className="size-3 stroke-[3]" />}
-          </button>
-        </div>
-      </td>
-
-      {/* 5. Tài khoản Email (Real info) */}
-      <td className="py-2 px-2 min-w-0">
+      {/* 3. Tài khoản Email (Real info) */}
+      <td className="py-1.5 px-2 min-w-0">
         <div className="flex items-center gap-2">
-          <div className="flex size-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary text-[10px] font-bold uppercase select-none">
+          <div className="flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary text-[9px] font-bold uppercase select-none">
             {account.email.charAt(0) || "G"}
           </div>
-          <div className="flex flex-col min-w-0">
+          <div className="flex flex-col min-w-0 leading-tight">
             <span
               className="text-xs font-medium text-foreground truncate select-all"
               title={account.email}
@@ -166,28 +172,75 @@ export function AccountTableRow({
               {account.email}
             </span>
             {account.lastRefreshAt && (
-              <span className="text-[10px] text-muted-foreground truncate">
-                Đồng bộ: {account.lastRefreshAt.slice(11, 16)}
+              <span className="text-[10px] text-muted-foreground truncate leading-none mt-0.5">
+                Đồng bộ: {formatSyncTime(account.lastRefreshAt)}
               </span>
             )}
           </div>
         </div>
       </td>
 
-      {/* 6. Loại Hạng (PRO) */}
-      <td className="py-2 px-0.5 text-center">
+      {/* 4. Loại Hạng (PRO) */}
+      <td className="py-1.5 px-0.5 text-center">
         <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold tracking-wide uppercase bg-violet-500/10 text-violet-600 dark:text-violet-400 border border-violet-500/20 whitespace-nowrap">
           {displayTier}
         </span>
       </td>
 
-      {/* 7. Tín dụng (Credits từ database) */}
-      <td className="py-2 px-1 text-center text-xs font-semibold text-foreground font-mono whitespace-nowrap">
-        {displayCredits}
+      {/* 5. Tín dụng (Credits từ database - Cho phép chỉnh sửa động) */}
+      <td className="py-1.5 px-1 text-center whitespace-nowrap">
+        {isEditingCredit ? (
+          <div className="inline-flex items-center justify-center gap-1">
+            <input
+              type="number"
+              min="0"
+              value={editCreditValue}
+              onChange={(e) => setEditCreditValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleSaveCredit();
+                if (e.key === "Escape") setIsEditingCredit(false);
+              }}
+              autoFocus
+              className="w-16 px-1 py-0.5 text-xs text-center font-mono font-semibold bg-background border border-primary rounded focus:outline-none focus:ring-1 focus:ring-primary text-foreground"
+            />
+            <button
+              type="button"
+              onClick={handleSaveCredit}
+              disabled={isSavingCredit}
+              className="flex size-4 items-center justify-center rounded bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20 cursor-pointer"
+              title="Lưu số tín dụng"
+            >
+              {isSavingCredit ? <Loader2 className="size-2.5 animate-spin" /> : <Check className="size-2.5" />}
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsEditingCredit(false)}
+              className="flex size-4 items-center justify-center rounded bg-muted text-muted-foreground hover:bg-muted/80 cursor-pointer"
+              title="Hủy"
+            >
+              <X className="size-2.5" />
+            </button>
+          </div>
+        ) : (
+          <div
+            className="group/cred inline-flex items-center justify-center gap-1 cursor-pointer py-0.5 px-1.5 rounded hover:bg-muted/60 transition-colors"
+            onClick={() => {
+              setEditCreditValue(String(realCredits));
+              setIsEditingCredit(true);
+            }}
+            title="Nhấp đúp hoặc bấm để sửa số Credit thực tế"
+          >
+            {isRefreshing && <Loader2 className="size-2.5 animate-spin text-amber-500" />}
+            <span className="text-xs font-semibold text-foreground font-mono">
+              {displayCredits}
+            </span>
+            <Edit2 className="size-2.5 text-muted-foreground opacity-0 group-hover/cred:opacity-100 transition-opacity" />
+          </div>
+        )}
       </td>
 
-      {/* 8. Proxy */}
-      <td className="py-2 px-0.5 text-center">
+      {/* 6. Proxy */}
+      <td className="py-1.5 px-0.5 text-center">
         <button
           type="button"
           onClick={() => onOpenProxyModal(account)}
@@ -199,17 +252,17 @@ export function AccountTableRow({
           title={hasProxy ? `Proxy: ${proxyValue}` : "Chưa cài proxy (nhấp để cấu hình)"}
         >
           <Globe className="size-3 shrink-0" />
-          <span className="truncate max-w-[45px]">{hasProxy ? proxyValue : "-"}</span>
+          <span className="truncate max-w-[60px]">{hasProxy ? proxyValue : "-"}</span>
         </button>
       </td>
 
-      {/* 9. Trạng thái */}
-      <td className="py-2 px-1 text-center">
+      {/* 7. Trạng thái */}
+      <td className="py-1.5 px-1 text-center">
         {statusBadge}
       </td>
 
-      {/* 10. Hành động (4 nút gọn gàng) */}
-      <td className="py-2 px-1 text-center">
+      {/* 8. Hành động */}
+      <td className="py-1.5 px-1 text-center">
         <div className="flex items-center justify-center gap-1">
           {/* Nút 1: Làm mới token headless */}
           <button
@@ -223,6 +276,21 @@ export function AccountTableRow({
               <Loader2 className="size-3 animate-spin" />
             ) : (
               <RefreshCw className="size-3" />
+            )}
+          </button>
+
+          {/* Nút: Kiểm tra kết nối */}
+          <button
+            type="button"
+            onClick={handleTest}
+            disabled={isTesting}
+            className="flex size-6 items-center justify-center rounded-md bg-purple-500/10 hover:bg-purple-500/20 text-purple-600 dark:text-purple-400 border border-purple-500/20 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+            title="Kiểm tra kết nối và trạng thái phiên đăng nhập"
+          >
+            {isTesting ? (
+              <Loader2 className="size-3 animate-spin" />
+            ) : (
+              <ShieldCheck className="size-3" />
             )}
           </button>
 

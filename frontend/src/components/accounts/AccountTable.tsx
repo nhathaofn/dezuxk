@@ -13,6 +13,7 @@ import {
   AlertCircle,
   Download,
   Users,
+  Zap,
 } from "lucide-react";
 
 interface AccountTableProps {
@@ -26,14 +27,14 @@ interface AccountTableProps {
   isExporting?: boolean;
   isImporting?: boolean;
   onToggleActive: (id: string, active: boolean) => void;
-  onToggleImage: (id: string, checked: boolean) => void;
-  onToggleVideo: (id: string, checked: boolean) => void;
-  onBulkToggleFeature: (feature: "image" | "video", checked: boolean) => void;
   onRefreshAccount: (id: string) => Promise<void>;
+  onTestAccount: (id: string) => Promise<void>;
   onOpenBrowser: (id: string) => Promise<void>;
   onDeleteAccount: (id: string) => void;
   onOpenProxyModal: (account: models.GoogleAccountResponse) => void;
+  onUpdateCredits?: (id: string, credits: number) => Promise<void>;
   proxies: Record<string, string>;
+  refreshingAccountId?: string | null;
 }
 
 export function AccountTable({
@@ -47,21 +48,15 @@ export function AccountTable({
   isExporting = false,
   isImporting = false,
   onToggleActive,
-  onToggleImage,
-  onToggleVideo,
-  onBulkToggleFeature,
   onRefreshAccount,
+  onTestAccount,
   onOpenBrowser,
   onDeleteAccount,
   onOpenProxyModal,
+  onUpdateCredits,
   proxies,
+  refreshingAccountId,
 }: AccountTableProps) {
-  // Real bulk toggle states derived from accounts in database
-  const allImageEnabled =
-    accounts.length > 0 && accounts.every((a) => a.imageEnabled !== false);
-  const allVideoEnabled =
-    accounts.length > 0 && accounts.every((a) => a.videoEnabled !== false);
-
   const [autoDisableExhausted, setAutoDisableExhausted] = useState(() => {
     return localStorage.getItem("dezuxk_auto_disable_exhausted") === "true";
   });
@@ -97,10 +92,10 @@ export function AccountTable({
 
   const activeAccountsCount = accounts.filter((a) => a.status === "ACTIVE").length;
 
-  // Calculate sum of credits directly from database
+  // Calculate sum of credits directly from database (100% dynamic)
   const totalCredits = accounts.reduce((sum, acc) => {
     if (acc.status === "ACTIVE" || acc.status === "") {
-      return sum + (acc.credits ?? 1050);
+      return sum + (typeof acc.credits === "number" ? acc.credits : 0);
     }
     return sum;
   }, 0);
@@ -108,93 +103,60 @@ export function AccountTable({
   return (
     <div className="w-full rounded-xl border border-border bg-card text-card-foreground shadow-xs overflow-hidden font-sans">
       {/* 1. Header Information Bar */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-6 py-4 border-b border-border bg-muted/20">
-        <div className="flex items-center gap-2.5">
-          <div className="flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 px-6 py-4 border-b border-border bg-muted/20">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-primary/20 via-primary/10 to-transparent border border-primary/25 text-primary shadow-xs">
             <Sparkles className="size-5" />
           </div>
-          <div>
-            <h3 className="text-base font-semibold text-foreground tracking-tight">
-              Tài khoản Flow & Google
+          <div className="min-w-0">
+            <h3 className="text-base font-semibold text-foreground tracking-tight whitespace-nowrap">
+              Tài khoản Google & Flow
             </h3>
-            <p className="text-xs text-muted-foreground">
-              Quản lý phiên đăng nhập, cấp phát credit và cấu hình Proxy cho từng tài khoản
+            <p className="text-xs text-muted-foreground truncate">
+              Quản lý phiên đăng nhập, hạn mức credit và cấu hình Proxy
             </p>
           </div>
         </div>
 
         {/* Live Counters */}
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-1.5 text-xs">
-            <span className="text-muted-foreground">Đang hoạt động:</span>
-            <span className="font-bold text-emerald-600 dark:text-emerald-400 font-mono">
+        <div className="flex items-center gap-2.5 shrink-0">
+          {/* Card 1: Hoạt động */}
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-emerald-500/25 bg-emerald-500/10 dark:bg-emerald-500/15 text-xs whitespace-nowrap shadow-2xs">
+            <span className="relative flex size-2 shrink-0">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75"></span>
+              <span className="relative inline-flex size-2 rounded-full bg-emerald-500"></span>
+            </span>
+            <span className="text-muted-foreground font-medium">Hoạt động:</span>
+            <span className="font-bold text-emerald-600 dark:text-emerald-400 font-mono text-sm">
               {activeAccountsCount}
             </span>
-            <span className="text-muted-foreground">/ {accounts.length}</span>
+            <span className="text-muted-foreground/60 text-xs font-mono">/ {accounts.length}</span>
           </div>
 
-          <div className="flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-1.5 text-xs">
-            <span className="text-muted-foreground">Tổng tín dụng:</span>
-            <span className="font-bold text-primary font-mono">
-              {totalCredits.toLocaleString()} credit
+          {/* Card 2: Tổng tín dụng */}
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-primary/25 bg-primary/10 dark:bg-primary/15 text-xs whitespace-nowrap shadow-2xs">
+            <Zap className="size-3.5 text-primary shrink-0" />
+            <span className="text-muted-foreground font-medium">Tổng tín dụng:</span>
+            <span className="font-bold text-foreground font-mono text-sm">
+              {totalCredits.toLocaleString()}
             </span>
+            <span className="text-[11px] text-muted-foreground font-medium">credit</span>
           </div>
         </div>
       </div>
 
       {/* 2. Operations & Filter Bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-3.5 border-b border-border/80 bg-background/50 text-xs">
-        {/* Left: Bulk toggles */}
-        <div className="flex flex-wrap items-center gap-5">
-          {/* Quick select: Checkbox Ảnh & Video */}
-          <div className="flex items-center gap-2">
-            <span className="font-medium text-muted-foreground">Bật tất cả:</span>
-            <label className="flex items-center gap-1.5 cursor-pointer select-none text-foreground font-medium">
-              <button
-                type="button"
-                role="checkbox"
-                aria-checked={allImageEnabled}
-                onClick={() => onBulkToggleFeature("image", !allImageEnabled)}
-                className={`flex size-4 items-center justify-center rounded border transition-colors ${
-                  allImageEnabled
-                    ? "bg-primary border-primary text-primary-foreground"
-                    : "border-input bg-background"
-                }`}
-              >
-                {allImageEnabled && <Check className="size-3 stroke-[3]" />}
-              </button>
-              Ảnh
-            </label>
-
-            <label className="flex items-center gap-1.5 cursor-pointer select-none text-foreground font-medium ml-1">
-              <button
-                type="button"
-                role="checkbox"
-                aria-checked={allVideoEnabled}
-                onClick={() => onBulkToggleFeature("video", !allVideoEnabled)}
-                className={`flex size-4 items-center justify-center rounded border transition-colors ${
-                  allVideoEnabled
-                    ? "bg-primary border-primary text-primary-foreground"
-                    : "border-input bg-background"
-                }`}
-              >
-                {allVideoEnabled && <Check className="size-3 stroke-[3]" />}
-              </button>
-              Video
-            </label>
-          </div>
-
-          {/* Auto Disable when limit reached */}
-          <div className="flex items-center gap-2 pl-3 border-l border-border">
-            <ToggleSwitch
-              size="sm"
-              checked={autoDisableExhausted}
-              onChange={handleToggleAutoDisable}
-            />
-            <span className="text-muted-foreground select-none font-medium">
-              Tự động tắt tài khoản hết hạn mức
-            </span>
-          </div>
+        {/* Left: Auto Disable when limit reached */}
+        <div className="flex items-center gap-2">
+          <ToggleSwitch
+            size="sm"
+            checked={autoDisableExhausted}
+            onChange={handleToggleAutoDisable}
+          />
+          <span className="text-muted-foreground select-none font-medium">
+            Tự động tắt tài khoản hết hạn mức
+          </span>
         </div>
 
         {/* Right: Actions */}
@@ -267,23 +229,19 @@ export function AccountTable({
       <div className="w-full overflow-hidden">
         <table className="w-full table-fixed border-collapse">
           <colgroup>
-            <col style={{ width: "32px" }} />  {/* 1. # */}
-            <col style={{ width: "48px" }} />  {/* 2. Bật/Tắt */}
-            <col style={{ width: "36px" }} />  {/* 3. Ảnh */}
-            <col style={{ width: "36px" }} />  {/* 4. Video */}
-            <col />                            {/* 5. Tài khoản (Auto fill remaining space) */}
-            <col style={{ width: "48px" }} />  {/* 6. Loại */}
-            <col style={{ width: "70px" }} />  {/* 7. Tín dụng */}
-            <col style={{ width: "60px" }} />  {/* 8. Proxy */}
-            <col style={{ width: "96px" }} />  {/* 9. Trạng thái */}
-            <col style={{ width: "114px" }} /> {/* 10. Hành động */}
+            <col style={{ width: "36px" }} />  {/* 1. # */}
+            <col style={{ width: "56px" }} />  {/* 2. Bật/Tắt */}
+            <col style={{ width: "210px" }} /> {/* 3. Tài khoản */}
+            <col style={{ width: "52px" }} />  {/* 4. Loại */}
+            <col style={{ width: "76px" }} />  {/* 5. Tín dụng */}
+            <col style={{ width: "84px" }} />  {/* 6. Proxy */}
+            <col style={{ width: "105px" }} /> {/* 7. Trạng thái */}
+            <col style={{ width: "135px" }} /> {/* 8. Hành động */}
           </colgroup>
           <thead>
             <tr className="border-b border-border bg-muted/40 text-[11px] font-semibold text-muted-foreground uppercase tracking-wider select-none">
               <th className="py-2.5 px-1 text-center">#</th>
-              <th className="py-2.5 px-0.5 text-center">Bật/Tắt</th>
-              <th className="py-2.5 px-0.5 text-center">Ảnh</th>
-              <th className="py-2.5 px-0.5 text-center">Video</th>
+              <th className="py-2.5 px-1 text-center">Bật/Tắt</th>
               <th className="py-2.5 px-2 text-left">Tài khoản</th>
               <th className="py-2.5 px-0.5 text-center">Loại</th>
               <th className="py-2.5 px-1 text-center">Tín dụng</th>
@@ -344,7 +302,7 @@ export function AccountTable({
           <tbody>
             {isLoading ? (
               <tr>
-                <td colSpan={10} className="py-12 text-center text-muted-foreground">
+                <td colSpan={8} className="py-12 text-center text-muted-foreground">
                   <div className="flex flex-col items-center justify-center gap-2">
                     <RefreshCw className="size-6 animate-spin text-primary" />
                     <span className="text-sm">Đang tải danh sách tài khoản...</span>
@@ -353,7 +311,7 @@ export function AccountTable({
               </tr>
             ) : filteredAccounts.length === 0 ? (
               <tr>
-                <td colSpan={10} className="py-12 text-center">
+                <td colSpan={8} className="py-12 text-center">
                   <div className="flex flex-col items-center justify-center gap-2 text-muted-foreground">
                     <AlertCircle className="size-8 text-muted-foreground/50" />
                     <p className="text-sm font-medium text-foreground">
@@ -368,8 +326,6 @@ export function AccountTable({
             ) : (
               filteredAccounts.map((acc, i) => {
                 const isActive = acc.status === "ACTIVE";
-                const imgEn = acc.imageEnabled ?? true;
-                const vidEn = acc.videoEnabled ?? true;
                 const proxy = acc.proxy || proxies[acc.id] || "-";
 
                 return (
@@ -378,17 +334,16 @@ export function AccountTable({
                     index={i + 1}
                     account={acc}
                     isActive={isActive}
-                    imageEnabled={imgEn}
-                    videoEnabled={vidEn}
                     proxyValue={proxy}
-                    credit={acc.credits ?? 1050}
+                    credit={typeof acc.credits === "number" ? acc.credits : 0}
                     onToggleActive={onToggleActive}
-                    onToggleImage={onToggleImage}
-                    onToggleVideo={onToggleVideo}
                     onRefresh={onRefreshAccount}
+                    onTest={onTestAccount}
                     onOpenProxyModal={onOpenProxyModal}
                     onOpenBrowser={onOpenBrowser}
                     onDelete={onDeleteAccount}
+                    onUpdateCredits={onUpdateCredits}
+                    isRefreshing={acc.id === refreshingAccountId}
                   />
                 );
               })

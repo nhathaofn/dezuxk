@@ -2,6 +2,7 @@ package chrome
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -103,4 +104,14 @@ func queryRegistryAppPath(hive string) (string, error) {
 	}
 
 	return "", errors.New("not found in registry")
+}
+
+// KillProcessTree cleanly terminates a process and all its child processes on Windows.
+func KillProcessTree(pid int) {
+	if pid <= 0 {
+		return
+	}
+	// On Windows, use taskkill /F /T /PID to terminate the whole tree
+	killCmd := exec.Command("taskkill", "/F", "/T", "/PID", fmt.Sprintf("%d", pid))
+	_ = killCmd.Run()
 }

@@ -118,8 +118,8 @@ func (d *DB) migrate() error {
 	}
 
 	// Migrate optional columns if not present
-	d.addColumnIfNotExists("google_accounts", "tier", "TEXT DEFAULT 'PRO'")
-	d.addColumnIfNotExists("google_accounts", "credits", "INTEGER DEFAULT 1050")
+	d.addColumnIfNotExists("google_accounts", "tier", "TEXT DEFAULT 'FREE'")
+	d.addColumnIfNotExists("google_accounts", "credits", "INTEGER DEFAULT 0")
 	d.addColumnIfNotExists("google_accounts", "proxy", "TEXT DEFAULT ''")
 	d.addColumnIfNotExists("google_accounts", "image_enabled", "INTEGER DEFAULT 1")
 	d.addColumnIfNotExists("google_accounts", "video_enabled", "INTEGER DEFAULT 1")

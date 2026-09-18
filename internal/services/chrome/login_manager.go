@@ -25,6 +25,9 @@ type ActiveSession struct {
 	SessionID  string
 	AccountID  string
 	Service    string
+	Proxy      string
+	ProxyUser  string
+	ProxyPass  string
 	ProfileDir string
 	Port       int
 	Cmd        *exec.Cmd
@@ -61,7 +64,7 @@ func NewLoginManager(database *db.DB, baseDataDir string) *LoginManager {
 }
 
 // StartLogin spawns a real Chrome browser on an isolated profile and begins CDP monitoring.
-func (m *LoginManager) StartLogin(service string) (*models.LoginSessionStatus, error) {
+func (m *LoginManager) StartLogin(service, proxy string) (*models.LoginSessionStatus, error) {
 	chromePath, err := FindChromeExecutable()
 	if err != nil {
 		return nil, fmt.Errorf("không thể khởi chạy: %w", err)
@@ -101,8 +104,20 @@ func (m *LoginManager) StartLogin(service string) (*models.LoginSessionStatus, e
 		"--disable-sync",
 		"--profile-directory=Default",
 		"--window-size=1080,780",
-		targetURL,
+		"--disable-blink-features=AutomationControlled",
 	}
+
+	var proxyUser, proxyPass string
+	if strings.TrimSpace(proxy) != "" {
+		serverFlag, u, p := FormatChromeProxyFlag(proxy)
+		if serverFlag != "" {
+			args = append(args, fmt.Sprintf("--proxy-server=%s", serverFlag))
+			proxyUser = u
+			proxyPass = p
+		}
+	}
+
+	args = append(args, targetURL)
 
 	cmd := exec.Command(chromePath, args...)
 
@@ -123,6 +138,9 @@ func (m *LoginManager) StartLogin(service string) (*models.LoginSessionStatus, e
 		SessionID:  sessionID,
 		AccountID:  accountID,
 		Service:    service,
+		Proxy:      strings.TrimSpace(proxy),
+		ProxyUser:  proxyUser,
+		ProxyPass:  proxyPass,
 		ProfileDir: absProfileDir,
 		Port:       port,
 		Cmd:        cmd,
@@ -167,7 +185,7 @@ func (m *LoginManager) CancelLogin(sessionID string) error {
 
 	session.CancelFunc()
 	if session.Cmd != nil && session.Cmd.Process != nil {
-		_ = session.Cmd.Process.Kill()
+		KillProcessTree(session.Cmd.Process.Pid)
 	}
 
 	// If never completed, clean up empty profile dir
@@ -181,11 +199,19 @@ func (m *LoginManager) CancelLogin(sessionID string) error {
 func (m *LoginManager) watchLoginSession(ctx context.Context, s *ActiveSession) {
 	defer func() {
 		if s.Cmd != nil && s.Cmd.Process != nil {
-			_ = s.Cmd.Process.Kill()
+			KillProcessTree(s.Cmd.Process.Pid)
 		}
 	}()
 
-	// 1. Wait for debug port to become ready (up to 15 seconds)
+	processExited := make(chan struct{})
+	go func() {
+		if s.Cmd != nil {
+			_ = s.Cmd.Wait()
+		}
+		close(processExited)
+	}()
+
+	// 1. Wait for debug port to become ready (up to 20 seconds)
 	var readyTarget *CDPTarget
 	var client *CDPClient
 	startWait := time.Now()
@@ -235,6 +261,11 @@ func (m *LoginManager) watchLoginSession(ctx context.Context, s *ActiveSession) 
 	}
 	defer client.Close()
 
+	// Enable proxy credentials response if proxy requires authentication
+	if s.ProxyUser != "" && s.ProxyPass != "" {
+		_ = client.EnableProxyAuth(ctx, s.ProxyUser, s.ProxyPass)
+	}
+
 	// 2. Poll every 1.5s to detect successful Google login
 	pollTicker := time.NewTicker(1500 * time.Millisecond)
 	defer pollTicker.Stop()
@@ -244,13 +275,10 @@ func (m *LoginManager) watchLoginSession(ctx context.Context, s *ActiveSession) 
 		case <-ctx.Done():
 			m.updateSessionStatus(s.SessionID, models.LoginStepCancelled, "Phiên đăng nhập đã hết thời gian hoặc bị hủy", nil, "")
 			return
+		case <-processExited:
+			m.updateSessionStatus(s.SessionID, models.LoginStepCancelled, "Cửa sổ Chrome đã bị đóng trước khi hoàn tất đăng nhập", nil, "")
+			return
 		case <-pollTicker.C:
-			// Check if user manually closed Chrome window
-			if s.Cmd.ProcessState != nil && s.Cmd.ProcessState.Exited() {
-				m.updateSessionStatus(s.SessionID, models.LoginStepCancelled, "Cửa sổ Chrome đã bị đóng trước khi hoàn tất đăng nhập", nil, "")
-				return
-			}
-
 			// Read current targets to check current URL
 			targets, err := QueryCDPTargets(s.Port)
 			if err != nil || len(targets) == 0 {
@@ -273,30 +301,47 @@ func (m *LoginManager) watchLoginSession(ctx context.Context, s *ActiveSession) 
 
 			cookieHeader, hasPSID, hasPSIDTS := FilterGoogleCookies(cookies)
 
-			// Determine if user has finished logging in:
-			// Must have __Secure-1PSID (or SID)
-			// AND must NOT currently be stuck on accounts.google.com signin/challenge/ServiceLogin
+			// Check URL conditions:
 			isSignInPage := strings.Contains(currentURL, "accounts.google.com/v3/signin") ||
 				strings.Contains(currentURL, "accounts.google.com/ServiceLogin") ||
 				strings.Contains(currentURL, "accounts.google.com/signin") ||
 				strings.Contains(currentURL, "signin/challenge")
 
-			if hasPSID && !isSignInPage {
-				// Login Detected! Transition to EXTRACTING_COOKIES
-				m.updateSessionStatus(s.SessionID, models.LoginStepExtracting, "Đã phát hiện phiên đăng nhập! Đang trích xuất Token CSRF và cấu hình...", nil, "")
+			isIntermediatePage := strings.Contains(currentURL, "myaccount.google.com") ||
+				strings.Contains(currentURL, "accounts.google.com/b/") ||
+				strings.Contains(currentURL, "gds.google.com") ||
+				strings.Contains(currentURL, "policies.google.com")
 
-				// Wait 2 seconds for Gemini WIZ scripts to complete mounting
+			isTargetReached := false
+			if strings.ToLower(s.Service) == "flow" {
+				isTargetReached = strings.Contains(currentURL, "flow.google.com") || strings.Contains(currentURL, "labs.google")
+			} else if strings.ToLower(s.Service) == "gemini" {
+				isTargetReached = strings.Contains(currentURL, "gemini.google.com")
+			}
+
+			// Login is ready if:
+			// 1. Target service page is reached, OR
+			// 2. Has PSID and left sign-in pages AND left intermediate account pages
+			loginReady := hasPSID && (isTargetReached || (!isSignInPage && !isIntermediatePage))
+
+			if loginReady {
+				// Login Detected! Transition to EXTRACTING_COOKIES
+				m.updateSessionStatus(s.SessionID, models.LoginStepExtracting, "Đã phát hiện phiên đăng nhập! Đang trích xuất thông tin...", nil, "")
+
 				time.Sleep(2 * time.Second)
 
-				// Extract CSRF Token SNlM0e via JavaScript evaluation
-				snlm0e, _ := client.EvaluateJS(ctx, `(function() {
-					if (window.WIZ_global_data && window.WIZ_global_data.SNlM0e) {
-						return window.WIZ_global_data.SNlM0e;
-					}
-					var match = document.documentElement.innerHTML.match(/"SNlM0e":"([^"]+)"/);
-					if (match && match[1]) return match[1];
-					return "";
-				})()`)
+				// Extract CSRF Token SNlM0e via JavaScript evaluation (primarily for Gemini)
+				snlm0e := ""
+				if strings.Contains(strings.ToLower(s.Service), "gemini") || strings.Contains(currentURL, "gemini.google.com") {
+					snlm0e, _ = client.EvaluateJS(ctx, `(function() {
+						if (window.WIZ_global_data && window.WIZ_global_data.SNlM0e) {
+							return window.WIZ_global_data.SNlM0e;
+						}
+						var match = document.documentElement.innerHTML.match(/"SNlM0e":"([^"]+)"/);
+						if (match && match[1]) return match[1];
+						return "";
+					})()`)
+				}
 
 				// Extract email and display name from page context
 				extractedEmail, _ := client.EvaluateJS(ctx, `(function() {
@@ -327,6 +372,15 @@ func (m *LoginManager) watchLoginSession(ctx context.Context, s *ActiveSession) 
 				}
 
 				// Build GoogleAccount model
+				// Extract live dynamic credits and tier from the session
+				liveCredits, liveTier := ExtractAccountCreditsAndTier(ctx, client)
+				if liveTier == "" {
+					liveTier = "FREE"
+				}
+				if liveCredits < 0 {
+					liveCredits = 0
+				}
+
 				nowStr := time.Now().UTC().Format("2006-01-02 15:04:05")
 				account := &models.GoogleAccount{
 					ID:            s.AccountID,
@@ -337,6 +391,11 @@ func (m *LoginManager) watchLoginSession(ctx context.Context, s *ActiveSession) 
 					SNlM0eToken:   snlm0e,
 					Services:      s.Service,
 					Status:        "ACTIVE",
+					Tier:          liveTier,
+					Credits:       liveCredits,
+					Proxy:         s.Proxy,
+					ImageEnabled:  true,
+					VideoEnabled:  true,
 					LastRefreshAt: nowStr,
 					CreatedAt:     nowStr,
 					UpdatedAt:     nowStr,
@@ -353,7 +412,7 @@ func (m *LoginManager) watchLoginSession(ctx context.Context, s *ActiveSession) 
 				// Gracefully close Chrome
 				_ = client.CloseBrowser(ctx)
 				if s.Cmd.Process != nil {
-					_ = s.Cmd.Process.Kill()
+					KillProcessTree(s.Cmd.Process.Pid)
 				}
 
 				successMsg := fmt.Sprintf("Đăng nhập thành công tài khoản %s! Session đã được lưu trữ an toàn.", extractedEmail)
