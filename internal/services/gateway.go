@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -20,6 +21,7 @@ type GatewayService struct {
 	isRunning bool
 	ip        string
 	port      int
+	bind      string
 }
 
 // NewGatewayService creates a new GatewayService instance.
@@ -29,7 +31,8 @@ func NewGatewayService(defaultPort int) *GatewayService {
 	}
 	return &GatewayService{
 		port: defaultPort,
-		ip:   DetectLocalIP(),
+		ip:   gatewayBindAddress(),
+		bind: gatewayBindAddress(),
 	}
 }
 
@@ -82,7 +85,7 @@ func (s *GatewayService) GetStatus() *models.GatewayStatus {
 
 	ip := s.ip
 	if s.isRunning {
-		ip = DetectLocalIP()
+		ip = s.bind
 	}
 
 	return &models.GatewayStatus{
@@ -136,7 +139,7 @@ func (s *GatewayService) Start(port int) (*models.GatewayStatus, error) {
 	if port > 0 {
 		s.port = port
 	}
-	s.ip = DetectLocalIP()
+	s.ip = s.bind
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -144,7 +147,7 @@ func (s *GatewayService) Start(port int) (*models.GatewayStatus, error) {
 		fmt.Fprintf(w, `{"status":"online","gateway":"Gateway Manager","time":"%s"}`, time.Now().UTC().Format(time.RFC3339))
 	})
 
-	addr := fmt.Sprintf("0.0.0.0:%d", s.port)
+	addr := fmt.Sprintf("%s:%d", s.bind, s.port)
 	server := &http.Server{
 		Addr:    addr,
 		Handler: mux,
@@ -173,6 +176,13 @@ func (s *GatewayService) Start(port int) (*models.GatewayStatus, error) {
 		IP:        s.ip,
 		Port:      s.port,
 	}, nil
+}
+
+func gatewayBindAddress() string {
+	if bind := os.Getenv("GATEWAY_BIND_ADDRESS"); bind != "" {
+		return bind
+	}
+	return config.DefaultGatewayBind
 }
 
 // Stop gracefully terminates the running gateway HTTP server.

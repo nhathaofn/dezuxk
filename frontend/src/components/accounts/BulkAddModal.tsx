@@ -17,7 +17,6 @@ export function BulkAddModal({ isOpen, onClose, onSuccess }: BulkAddModalProps) 
   const [rawText, setRawText] = useState("");
   const [defaultProxy, setDefaultProxy] = useState("");
   const [skipExisting, setSkipExisting] = useState(true);
-  const [service, setService] = useState("flow,gemini");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [result, setResult] = useState<models.BulkAddResult | null>(null);
   const [showGuide, setShowGuide] = useState(false);
@@ -27,6 +26,10 @@ export function BulkAddModal({ isOpen, onClose, onSuccess }: BulkAddModalProps) 
     if (isOpen) {
       setResult(null);
       setIsSubmitting(false);
+    } else {
+      // Cookie strings are session credentials; do not retain them after the dialog closes.
+      setRawText("");
+      setDefaultProxy("");
     }
   }, [isOpen]);
 
@@ -51,17 +54,22 @@ export function BulkAddModal({ isOpen, onClose, onSuccess }: BulkAddModalProps) 
         rawList: rawText,
         defaultProxy: defaultProxy.trim(),
         skipExisting,
-        defaultTier: "PRO",
-        service,
+        defaultTier: "FREE",
+        service: "flow,gemini",
       });
 
       const res = await BulkAddGoogleAccounts(input);
       setResult(res);
+      setRawText("");
 
-      toast.success(
-        "Nhập danh sách hoàn tất",
-        `Đã thêm ${res.addedCount} tài khoản, bỏ qua ${res.skippedCount}, lỗi ${res.failedCount}.`
-      );
+      const summary = `Đã thêm ${res.addedCount} tài khoản, bỏ qua ${res.skippedCount}, lỗi ${res.failedCount}.`;
+      if (res.failedCount > 0 && res.addedCount === 0) {
+        toast.error("Nhập danh sách thất bại", summary);
+      } else if (res.failedCount > 0) {
+        toast.warning("Nhập danh sách có cảnh báo", summary);
+      } else {
+        toast.success("Nhập danh sách hoàn tất", summary);
+      }
 
       if (res.addedCount > 0) {
         onSuccess();
@@ -78,21 +86,24 @@ export function BulkAddModal({ isOpen, onClose, onSuccess }: BulkAddModalProps) 
       open={isOpen}
       onClose={onClose}
       title="Thêm tài khoản theo danh sách"
-      className="bg-[#161922] border-zinc-800 text-zinc-100 max-w-2xl"
+      className="max-w-2xl"
     >
       <div className="space-y-4 pt-1">
         {/* Header Icon + Description */}
-        <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
+        <div className="flex items-center justify-between pb-3 border-b border-border">
           <div className="flex items-center gap-3">
-            <div className="flex size-9 items-center justify-center rounded-lg bg-indigo-500/10 text-indigo-400 shrink-0">
+            <div className="flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary shrink-0">
               <Users className="size-5" />
             </div>
             <div>
-              <h4 className="text-sm font-semibold text-zinc-200">
-                Thêm hàng loạt tài khoản Google / Flow
+              <h4 className="text-sm font-semibold text-foreground">
+                Thêm hàng loạt tài khoản Google
               </h4>
-              <p className="text-xs text-zinc-400">
-                Hỗ trợ định dạng phân cách gạch đứng (|), hai chấm (:), chuỗi Cookie hoặc JSON
+              <p className="text-xs text-muted-foreground">
+                Hỗ trợ định dạng phân cách gạch đứng (|), tab, chuỗi Cookie hoặc JSON
+              </p>
+              <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">
+                Tài khoản nhập bằng Cookie sẽ ở trạng thái chờ kiểm tra; hãy bấm Kiểm tra phiên trước khi bật.
               </p>
             </div>
           </div>
@@ -100,7 +111,7 @@ export function BulkAddModal({ isOpen, onClose, onSuccess }: BulkAddModalProps) 
           <button
             type="button"
             onClick={() => setShowGuide(!showGuide)}
-            className="flex items-center gap-1 text-xs text-indigo-400 hover:text-indigo-300 transition-colors cursor-pointer"
+            className="flex items-center gap-1 text-xs text-primary hover:underline transition-colors cursor-pointer"
           >
             <HelpCircle className="size-3.5" />
             <span>{showGuide ? "Ẩn cú pháp" : "Xem cú pháp"}</span>
@@ -109,26 +120,23 @@ export function BulkAddModal({ isOpen, onClose, onSuccess }: BulkAddModalProps) 
 
         {/* Syntax guide accordion */}
         {showGuide && (
-          <div className="rounded-lg bg-zinc-900/90 border border-zinc-700/80 p-3 text-xs space-y-2 text-zinc-300">
-            <div className="flex items-center gap-1.5 font-semibold text-indigo-300">
+          <div className="rounded-lg border border-border bg-muted/40 p-3 text-xs space-y-2 text-foreground">
+            <div className="flex items-center gap-1.5 font-semibold text-primary">
               <Info className="size-3.5" />
               <span>Các định dạng được hệ thống tự động nhận diện:</span>
             </div>
-            <ul className="list-disc list-inside space-y-1 font-mono text-[11px] text-zinc-400">
+            <ul className="list-disc list-inside space-y-1 font-mono text-[11px] text-muted-foreground">
               <li>
-                <span className="text-zinc-200">email|password</span> (vd: user1@gmail.com|Matkhau123)
+                <span className="text-foreground">email|cookie</span> (Cookie chứa __Secure-1PSID=...)
               </li>
               <li>
-                <span className="text-zinc-200">email|password|recovery_email</span>
+                <span className="text-foreground">email|cookie|proxy</span>
               </li>
               <li>
-                <span className="text-zinc-200">email|password|recovery|proxy</span> (vd: user@gmail.com|pass|rec@mail.com|103.14.22.1:8080)
+                <span className="text-foreground">JSON</span> với <span className="text-foreground">email</span>, <span className="text-foreground">cookie</span> và <span className="text-foreground">proxy</span> tùy chọn
               </li>
               <li>
-                <span className="text-zinc-200">email:password</span> hoặc <span className="text-zinc-200">email:password:recovery:proxy</span>
-              </li>
-              <li>
-                <span className="text-zinc-200">Chuỗi cookie Google</span> (chứa __Secure-1PSID=...)
+                Không nhập mật khẩu Google; hệ thống chỉ nhận phiên Cookie đã đăng nhập
               </li>
             </ul>
           </div>
@@ -137,10 +145,10 @@ export function BulkAddModal({ isOpen, onClose, onSuccess }: BulkAddModalProps) 
         {/* Textarea Input */}
         <div>
           <div className="flex items-center justify-between mb-1.5">
-            <label className="text-xs font-semibold text-zinc-300">
+            <label className="text-xs font-semibold text-foreground">
               Danh sách tài khoản (mỗi tài khoản 1 dòng)
             </label>
-            <span className="text-xs text-zinc-400 font-mono">
+            <span className="text-xs text-muted-foreground font-mono">
               {lineCount} dòng hợp lệ
             </span>
           </div>
@@ -149,16 +157,16 @@ export function BulkAddModal({ isOpen, onClose, onSuccess }: BulkAddModalProps) 
             value={rawText}
             onChange={(e) => setRawText(e.target.value)}
             disabled={isSubmitting}
-            placeholder={`user1@gmail.com|MatKhau123\nuser2@gmail.com|MatKhau456|backup2@gmail.com\nuser3@gmail.com|MatKhau789|backup3@gmail.com|http://103.1.2.3:8080`}
+            placeholder={`user1@gmail.com|__Secure-1PSID=...; SID=...;\nuser2@gmail.com|__Secure-1PSID=...; SID=...;|http://103.1.2.3:8080\n{"email":"user3@gmail.com","cookie":"SID=..."}`}
             rows={8}
-            className="w-full rounded-lg bg-zinc-900/90 border border-zinc-700 p-3 text-xs font-mono text-zinc-100 placeholder:text-zinc-600 focus:outline-hidden focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all resize-y"
+            className="w-full rounded-lg bg-background border border-input p-3 text-xs font-mono text-foreground placeholder:text-muted-foreground focus:outline-hidden focus:border-ring focus:ring-1 focus:ring-ring/50 transition-all resize-y"
           />
         </div>
 
         {/* Configurations */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
           <div>
-            <label className="text-xs font-medium text-zinc-300 block mb-1">
+            <label className="text-xs font-medium text-foreground block mb-1">
               Proxy mặc định (cho các dòng không có proxy riêng):
             </label>
             <Input
@@ -166,18 +174,18 @@ export function BulkAddModal({ isOpen, onClose, onSuccess }: BulkAddModalProps) 
               onChange={(e) => setDefaultProxy(e.target.value)}
               disabled={isSubmitting}
               placeholder="vd: http://103.1.2.3:8080 hoặc ip:port:user:pass"
-              className="bg-zinc-900/80 border-zinc-700 text-zinc-100 text-xs font-mono placeholder:text-zinc-600"
+              className="bg-background border-input text-foreground text-xs font-mono placeholder:text-muted-foreground"
             />
           </div>
 
           <div className="flex flex-col justify-end">
-            <label className="flex items-center gap-2 cursor-pointer select-none text-xs text-zinc-300 py-2">
+            <label className="flex items-center gap-2 cursor-pointer select-none text-xs text-foreground py-2">
               <input
                 type="checkbox"
                 checked={skipExisting}
                 onChange={(e) => setSkipExisting(e.target.checked)}
                 disabled={isSubmitting}
-                className="size-4 rounded border-zinc-700 bg-zinc-900 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                className="size-4 rounded border-input bg-background text-primary focus:ring-ring cursor-pointer"
               />
               <span>Bỏ qua tài khoản đã tồn tại trong cơ sở dữ liệu</span>
             </label>
@@ -186,40 +194,40 @@ export function BulkAddModal({ isOpen, onClose, onSuccess }: BulkAddModalProps) 
 
         {/* Results summary view */}
         {result && (
-          <div className="rounded-lg bg-zinc-900 border border-zinc-800 p-3 space-y-2 text-xs">
+          <div className="rounded-lg bg-muted/40 border border-border p-3 space-y-2 text-xs">
             <div className="flex items-center justify-between font-semibold">
-              <span className="text-zinc-300">Kết quả xử lý:</span>
+              <span className="text-foreground">Kết quả xử lý:</span>
               <div className="flex items-center gap-3">
-                <span className="text-emerald-400 font-mono">
+                <span className="text-emerald-700 dark:text-emerald-400 font-mono">
                   + {result.addedCount} thành công
                 </span>
-                <span className="text-amber-400 font-mono">
+                <span className="text-amber-700 dark:text-amber-400 font-mono">
                   ~ {result.skippedCount} bỏ qua
                 </span>
                 {result.failedCount > 0 && (
-                  <span className="text-rose-400 font-mono">
+                  <span className="text-rose-700 dark:text-rose-400 font-mono">
                     ! {result.failedCount} lỗi
                   </span>
                 )}
               </div>
             </div>
 
-            <div className="max-h-36 overflow-y-auto space-y-1 divide-y divide-zinc-800/60 font-mono text-[11px] pr-1">
+            <div className="max-h-36 overflow-y-auto space-y-1 divide-y divide-border/60 font-mono text-[11px] pr-1">
               {result.items.map((it, idx) => (
                 <div key={idx} className="flex items-center justify-between py-1">
                   <div className="flex items-center gap-2 truncate min-w-0">
-                    {it.status === "ADDED" && <CheckCircle2 className="size-3 text-emerald-400 shrink-0" />}
-                    {it.status === "SKIPPED" && <AlertCircle className="size-3 text-amber-400 shrink-0" />}
-                    {it.status === "ERROR" && <AlertCircle className="size-3 text-rose-400 shrink-0" />}
-                    <span className="truncate text-zinc-200">{it.email}</span>
+                    {it.status === "ADDED" && <CheckCircle2 className="size-3 text-emerald-600 dark:text-emerald-400 shrink-0" />}
+                    {it.status === "SKIPPED" && <AlertCircle className="size-3 text-amber-600 dark:text-amber-400 shrink-0" />}
+                    {it.status === "ERROR" && <AlertCircle className="size-3 text-rose-600 dark:text-rose-400 shrink-0" />}
+                    <span className="truncate text-foreground">{it.email}</span>
                   </div>
                   <span
                     className={`shrink-0 ml-2 text-[10px] ${
                       it.status === "ADDED"
-                        ? "text-emerald-400"
+                         ? "text-emerald-700 dark:text-emerald-400"
                         : it.status === "SKIPPED"
-                        ? "text-amber-400"
-                        : "text-rose-400"
+                         ? "text-amber-700 dark:text-amber-400"
+                         : "text-rose-700 dark:text-rose-400"
                     }`}
                   >
                     {it.message}
@@ -231,7 +239,7 @@ export function BulkAddModal({ isOpen, onClose, onSuccess }: BulkAddModalProps) 
         )}
 
         {/* Action Buttons */}
-        <div className="flex items-center justify-between border-t border-zinc-800 pt-4">
+        <div className="flex items-center justify-between border-t border-border pt-4">
           <Button
             type="button"
             variant="ghost"
@@ -241,7 +249,7 @@ export function BulkAddModal({ isOpen, onClose, onSuccess }: BulkAddModalProps) 
               setResult(null);
             }}
             disabled={isSubmitting || (!rawText && !result)}
-            className="text-xs text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
+            className="text-xs text-muted-foreground hover:text-foreground"
           >
             Xóa danh sách
           </Button>
@@ -253,7 +261,7 @@ export function BulkAddModal({ isOpen, onClose, onSuccess }: BulkAddModalProps) 
               size="sm"
               onClick={onClose}
               disabled={isSubmitting}
-              className="text-xs border-zinc-700 bg-zinc-800 text-zinc-200 hover:bg-zinc-700"
+              className="text-xs"
             >
               {result ? "Đóng" : "Hủy"}
             </Button>
@@ -263,7 +271,7 @@ export function BulkAddModal({ isOpen, onClose, onSuccess }: BulkAddModalProps) 
               size="sm"
               onClick={handleSubmit}
               disabled={isSubmitting || lineCount === 0}
-              className="text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-semibold cursor-pointer"
+              className="text-xs bg-primary hover:bg-primary/90 text-primary-foreground font-semibold cursor-pointer"
             >
               {isSubmitting ? (
                 <>

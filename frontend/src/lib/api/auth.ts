@@ -41,6 +41,13 @@ export async function getCurrentUser(): Promise<User | null> {
   return null;
 }
 
+export async function isAuthSetupRequired(): Promise<boolean> {
+  if (AppBindings && typeof AppBindings.IsAuthSetupRequired === "function") {
+    return await AppBindings.IsAuthSetupRequired();
+  }
+  return false;
+}
+
 export async function logoutUser(): Promise<boolean> {
   if (AppBindings && typeof AppBindings.Logout === "function") {
     return await AppBindings.Logout();

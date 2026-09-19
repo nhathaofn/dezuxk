@@ -7,6 +7,7 @@ import { Alert } from "@/components/ui/alert";
 import { Dialog } from "@/components/ui/dialog";
 import { getSettings, updateGatewayPort, changePassword } from "@/lib/api/settings";
 import { toast } from "@/lib/toast";
+import { MIN_PASSWORD_LENGTH } from "@/lib/constants";
 import { Server, Lock, Loader2 } from "lucide-react";
 
 export function SettingsPage() {
@@ -75,6 +76,15 @@ export function SettingsPage() {
     setIsPasswordModalOpen(true);
   };
 
+  const handleClosePasswordModal = () => {
+    if (isChangingPass) return;
+    setIsPasswordModalOpen(false);
+    setCurrentPassword("");
+    setNewPassword("");
+    setConfirmPassword("");
+    setPassError(null);
+  };
+
   const handleChangePassword = async (e: React.FormEvent) => {
     e.preventDefault();
     setPassError(null);
@@ -84,8 +94,8 @@ export function SettingsPage() {
       return;
     }
 
-    if (newPassword.length < 4) {
-      setPassError("Mật khẩu mới phải có ít nhất 4 ký tự.");
+    if (newPassword.length < MIN_PASSWORD_LENGTH) {
+      setPassError(`Mật khẩu mới phải có ít nhất ${MIN_PASSWORD_LENGTH} ký tự.`);
       return;
     }
 
@@ -231,7 +241,7 @@ export function SettingsPage() {
       {/* Change Password Dialog Modal */}
       <Dialog
         open={isPasswordModalOpen}
-        onClose={() => !isChangingPass && setIsPasswordModalOpen(false)}
+        onClose={handleClosePasswordModal}
         title="Đổi mật khẩu quản trị"
       >
         <div className="space-y-4">
@@ -267,7 +277,7 @@ export function SettingsPage() {
                 id="new-pass"
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
-                placeholder="Tối thiểu 4 ký tự"
+                placeholder="Tối thiểu 5 ký tự"
                 disabled={isChangingPass}
                 required
               />
@@ -296,7 +306,7 @@ export function SettingsPage() {
                 variant="ghost"
                 size="sm"
                 disabled={isChangingPass}
-                onClick={() => setIsPasswordModalOpen(false)}
+                onClick={handleClosePasswordModal}
                 className="text-xs"
               >
                 Hủy

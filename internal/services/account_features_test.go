@@ -2,11 +2,13 @@ package services
 
 import (
 	"archive/zip"
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	appcrypto "dezuxk/internal/crypto"
 	"dezuxk/internal/db"
 	"dezuxk/internal/models"
 	"dezuxk/internal/services/chrome"
@@ -30,9 +32,9 @@ func TestBulkAddAndExportBackup(t *testing.T) {
 	// 1. Test Bulk Add Accounts
 	bulkInput := models.BulkAddInput{
 		RawList: `
-test1@gmail.com|Pass123
-test2@gmail.com|Pass456|recovery@gmail.com|http://103.1.2.3:8080
-test3@gmail.com:Pass789
+	test1@gmail.com|SID=test_sid_1;
+test2@gmail.com|__Secure-1PSID=test_psid_2; SID=test_sid_2;|http://103.1.2.3:8080
+test3@gmail.com|SID=test_sid_3;
 {"email": "test4@gmail.com", "cookie": "__Secure-1PSID=testcookie123; SID=abc;", "proxy": "127.0.0.1:8888"}
 `,
 		DefaultProxy: "http://10.0.0.1:8080",
@@ -61,6 +63,57 @@ test3@gmail.com:Pass789
 		t.Fatalf("expected 4 accounts in db, got %d", len(accounts))
 	}
 
+	// Updating an existing account from a bulk list must not erase durable
+	// settings such as its tier, credit snapshot, or proxy when the row omits
+	// those optional values.
+	existing, err := database.GetGoogleAccountByEmail("test1@gmail.com")
+	if err != nil {
+		t.Fatalf("failed to load existing bulk account: %v", err)
+	}
+	if err := database.UpdateGoogleAccountCredits(existing.ID, 4321); err != nil {
+		t.Fatalf("failed to seed existing credits: %v", err)
+	}
+	updatedResult, err := svc.BulkAddAccounts(models.BulkAddInput{
+		RawList:      "TEST1@gmail.com|SID=replaced_sid;",
+		SkipExisting: false,
+		DefaultTier:  "FREE",
+		Service:      "gemini",
+	})
+	if err != nil {
+		t.Fatalf("bulk update failed: %v", err)
+	}
+	if updatedResult.AddedCount != 1 || updatedResult.FailedCount != 0 {
+		t.Fatalf("unexpected bulk update result: %+v", updatedResult)
+	}
+	updatedAccount, err := database.GetGoogleAccountByEmail("test1@gmail.com")
+	if err != nil {
+		t.Fatalf("failed to reload updated bulk account: %v", err)
+	}
+	if updatedAccount.Credits != 4321 {
+		t.Errorf("bulk update erased credits: got %d", updatedAccount.Credits)
+	}
+	if updatedAccount.Tier != "PRO" {
+		t.Errorf("bulk update erased tier: got %s", updatedAccount.Tier)
+	}
+	if updatedAccount.Proxy != "http://10.0.0.1:8080" {
+		t.Errorf("bulk update erased proxy: got %q", updatedAccount.Proxy)
+	}
+	if updatedAccount.Status != "PENDING" {
+		t.Errorf("bulk update should require session verification: got %s", updatedAccount.Status)
+	}
+
+	skippedResult, err := svc.BulkAddAccounts(models.BulkAddInput{
+		RawList:      "test1@gmail.com|SID=another_sid;",
+		SkipExisting: true,
+		Service:      "flow,gemini",
+	})
+	if err != nil {
+		t.Fatalf("bulk skip-existing failed: %v", err)
+	}
+	if skippedResult.SkippedCount != 1 || skippedResult.AddedCount != 0 {
+		t.Fatalf("unexpected skip-existing result: %+v", skippedResult)
+	}
+
 	// 2. Test Manual Add Account
 	manualInput := models.ManualAccountInput{
 		Email:       "manual@gmail.com",
@@ -78,10 +131,14 @@ test3@gmail.com:Pass789
 	if manualRes.Email != "manual@gmail.com" {
 		t.Errorf("expected manual@gmail.com, got %s", manualRes.Email)
 	}
+	if manualRes.Services != "flow,gemini" {
+		t.Errorf("expected manual account to expose both services, got %q", manualRes.Services)
+	}
 
 	// 3. Test Export Backup ZIP
 	zipOut := filepath.Join(tempData, "test_backup.zip")
-	exportRes, err := svc.ExportBackup(zipOut)
+	exportPassword := "backup-password-123"
+	exportRes, err := svc.ExportBackup(zipOut, exportPassword)
 	if err != nil {
 		t.Fatalf("ExportBackup failed: %v", err)
 	}
@@ -91,11 +148,21 @@ test3@gmail.com:Pass789
 	}
 
 	// Inspect ZIP contents
-	zipReader, err := zip.OpenReader(zipOut)
+	encrypted, err := os.ReadFile(zipOut)
+	if err != nil {
+		t.Fatalf("failed to read exported backup: %v", err)
+	}
+	if !bytes.HasPrefix(encrypted, []byte(appcrypto.BackupPrefix)) {
+		t.Fatalf("exported backup is not encrypted")
+	}
+	plain, err := appcrypto.DecryptBackup(encrypted, exportPassword)
+	if err != nil {
+		t.Fatalf("failed to decrypt exported backup for verification: %v", err)
+	}
+	zipReader, err := zip.NewReader(bytes.NewReader(plain), int64(len(plain)))
 	if err != nil {
 		t.Fatalf("failed to open exported zip: %v", err)
 	}
-	defer zipReader.Close()
 
 	foundAccountsJSON := false
 	foundManifestJSON := false
@@ -196,5 +263,3 @@ func TestDynamicCreditsAndTier(t *testing.T) {
 		t.Errorf("expected ULTRA tier, got %s", refreshedAcc.Tier)
 	}
 }
-
-

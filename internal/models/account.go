@@ -1,6 +1,7 @@
 package models
 
 import (
+	"net/url"
 	"strings"
 	"time"
 )
@@ -11,14 +12,14 @@ type GoogleAccount struct {
 	Email         string `json:"email"`
 	Name          string `json:"name"`
 	AvatarURL     string `json:"avatarUrl"`
-	ProfileDir    string `json:"profileDir"`
-	Cookies       string `json:"cookies"`
-	SNlM0eToken   string `json:"snlm0eToken"`
+	ProfileDir    string `json:"-"`
+	Cookies       string `json:"-"`
+	SNlM0eToken   string `json:"-"`
 	Services      string `json:"services"`
 	Status        string `json:"status"` // ACTIVE, REFRESHING, EXPIRED, ERROR, DISABLED
 	Tier          string `json:"tier"`   // PRO, FREE
 	Credits       int    `json:"credits"`
-	Proxy         string `json:"proxy"`
+	Proxy         string `json:"-"`
 	ImageEnabled  bool   `json:"imageEnabled"`
 	VideoEnabled  bool   `json:"videoEnabled"`
 	UserAgent     string `json:"userAgent"`
@@ -26,8 +27,8 @@ type GoogleAccount struct {
 	LastRefreshAt string `json:"lastRefreshAt,omitempty"`
 	CreatedAt     string `json:"createdAt"`
 	UpdatedAt     string `json:"updatedAt"`
-	Password      string `json:"password,omitempty"`
-	RecoveryEmail string `json:"recoveryEmail,omitempty"`
+	Password      string `json:"-"`
+	RecoveryEmail string `json:"-"`
 }
 
 // ToResponse converts GoogleAccount to a sanitized GoogleAccountResponse.
@@ -54,7 +55,7 @@ func (a *GoogleAccount) ToResponse() *GoogleAccountResponse {
 		Services:      a.Services,
 		Tier:          tier,
 		Credits:       credits,
-		Proxy:         a.Proxy,
+		Proxy:         redactProxy(a.Proxy),
 		ImageEnabled:  a.ImageEnabled,
 		VideoEnabled:  a.VideoEnabled,
 		HasPSID:       hasPsid,
@@ -65,6 +66,23 @@ func (a *GoogleAccount) ToResponse() *GoogleAccountResponse {
 		LastRefreshAt: a.LastRefreshAt,
 		CreatedAt:     a.CreatedAt,
 	}
+}
+
+// redactProxy returns a display-safe proxy address without credentials.
+// The full value remains backend-only and is never included in account lists.
+func redactProxy(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if parsed, err := url.Parse(raw); err == nil && parsed.Host != "" {
+		return parsed.Scheme + "://" + parsed.Host
+	}
+	parts := strings.Split(raw, ":")
+	if len(parts) >= 2 && parts[0] != "" && parts[1] != "" {
+		return parts[0] + ":" + parts[1]
+	}
+	return "configured"
 }
 
 // GoogleAccountResponse is the frontend-safe view of a Google account.
@@ -87,6 +105,54 @@ type GoogleAccountResponse struct {
 	LastError     string `json:"lastError,omitempty"`
 	LastRefreshAt string `json:"lastRefreshAt,omitempty"`
 	CreatedAt     string `json:"createdAt"`
+}
+
+// LiveFlowQuota is a non-persistent snapshot read directly from the
+// authenticated Google Flow session. Google may expose only a combined
+// balance for some plans; Has* flags keep that distinction explicit.
+type LiveFlowQuota struct {
+	Available         bool   `json:"available"`
+	Tier              string `json:"tier"`
+	TotalCredits      int    `json:"totalCredits"`
+	HasTotalCredits   bool   `json:"hasTotalCredits"`
+	DailyCredits      int    `json:"dailyCredits"`
+	HasDailyCredits   bool   `json:"hasDailyCredits"`
+	MonthlyCredits    int    `json:"monthlyCredits"`
+	HasMonthlyCredits bool   `json:"hasMonthlyCredits"`
+	DailyResetAt      string `json:"dailyResetAt,omitempty"`
+	MonthlyResetAt    string `json:"monthlyResetAt,omitempty"`
+	Message           string `json:"message,omitempty"`
+}
+
+// LiveGeminiQuota is a non-persistent snapshot read from Gemini's usage page.
+// Gemini currently exposes percentage-based product limits rather than a
+// single credit balance, so current and weekly windows are represented
+// independently.
+type LiveGeminiQuota struct {
+	Available               bool   `json:"available"`
+	Tier                    string `json:"tier"`
+	CurrentUsedPercent      int    `json:"currentUsedPercent"`
+	HasCurrentUsedPercent   bool   `json:"hasCurrentUsedPercent"`
+	CurrentRemainingPercent int    `json:"currentRemainingPercent"`
+	HasCurrentRemaining     bool   `json:"hasCurrentRemaining"`
+	CurrentResetAt          string `json:"currentResetAt,omitempty"`
+	WeeklyUsedPercent       int    `json:"weeklyUsedPercent"`
+	HasWeeklyUsedPercent    bool   `json:"hasWeeklyUsedPercent"`
+	WeeklyRemainingPercent  int    `json:"weeklyRemainingPercent"`
+	HasWeeklyRemaining      bool   `json:"hasWeeklyRemaining"`
+	WeeklyResetAt           string `json:"weeklyResetAt,omitempty"`
+	Message                 string `json:"message,omitempty"`
+}
+
+// LiveAccountMetrics contains realtime service data only. It is intentionally
+// not part of GoogleAccount and is never written to SQLite.
+type LiveAccountMetrics struct {
+	AccountID   string          `json:"accountId"`
+	Status      string          `json:"status"` // LIVE, PARTIAL, ERROR
+	Flow        LiveFlowQuota   `json:"flow"`
+	Gemini      LiveGeminiQuota `json:"gemini"`
+	RetrievedAt time.Time       `json:"retrievedAt"`
+	Error       string          `json:"error,omitempty"`
 }
 
 // LoginStep represents the current stage of an interactive Chrome login.
@@ -141,13 +207,9 @@ type BulkAddInput struct {
 
 // BulkAccountItem models an individual entry parsed from bulk list.
 type BulkAccountItem struct {
-	Email         string `json:"email"`
-	Password      string `json:"password,omitempty"`
-	RecoveryEmail string `json:"recoveryEmail,omitempty"`
-	Proxy         string `json:"proxy,omitempty"`
-	Cookies       string `json:"cookies,omitempty"`
-	Status        string `json:"status"` // PENDING, ADDED, SKIPPED, ERROR
-	Message       string `json:"message,omitempty"`
+	Email   string `json:"email"`
+	Status  string `json:"status"` // PENDING, ADDED, SKIPPED, ERROR
+	Message string `json:"message,omitempty"`
 }
 
 // BulkAddResult models the outcome of a bulk add operation.
@@ -184,4 +246,12 @@ type RestoreResult struct {
 	ProfilesRestored int      `json:"profilesRestored"`
 	Errors           []string `json:"errors,omitempty"`
 	Message          string   `json:"message"`
+}
+
+// CachePurgeResult models the outcome of clearing cache from account profile directories.
+type CachePurgeResult struct {
+	Success         bool   `json:"success"`
+	FreedBytes      int64  `json:"freedBytes"`
+	ProfilesCleaned int    `json:"profilesCleaned"`
+	Message         string `json:"message"`
 }

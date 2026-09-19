@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -64,16 +65,16 @@ type cdpError struct {
 
 // CDPClient provides communication with a Chrome instance over WebSocket.
 type CDPClient struct {
-	wsURL       string
-	conn        *websocket.Conn
-	mu          sync.Mutex
-	reqID       int64
-	pending     map[int64]chan *cdpResponse
-	stopChan    chan struct{}
-	isClosed    bool
-	closeOnce   sync.Once
-	proxyUser   string
-	proxyPass   string
+	wsURL     string
+	conn      *websocket.Conn
+	mu        sync.Mutex
+	reqID     int64
+	pending   map[int64]chan *cdpResponse
+	stopChan  chan struct{}
+	isClosed  bool
+	closeOnce sync.Once
+	proxyUser string
+	proxyPass string
 }
 
 // ConnectCDP connects to a given CDP WebSocket debugger URL.
@@ -268,6 +269,51 @@ func (c *CDPClient) GetCookies(ctx context.Context) ([]CDPCookie, error) {
 	return result.Cookies, nil
 }
 
+// SetGoogleCookieHeader seeds a managed Chrome profile from a user-supplied
+// Google cookie header. Cookies are scoped to Google and credentials are never
+// returned to the frontend.
+func (c *CDPClient) SetGoogleCookieHeader(ctx context.Context, header string) error {
+	setCount := 0
+	for _, part := range strings.Split(header, ";") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		name, value, ok := strings.Cut(part, "=")
+		name = strings.TrimSpace(name)
+		value = strings.TrimSpace(value)
+		if !ok || name == "" || value == "" || !isGoogleSessionCookieName(name) {
+			continue
+		}
+		params := map[string]interface{}{
+			"name":   name,
+			"value":  value,
+			"domain": ".google.com",
+			"path":   "/",
+			"secure": true,
+		}
+		// __Host- cookies cannot carry a Domain attribute.
+		if strings.HasPrefix(name, "__Host-") {
+			delete(params, "domain")
+			params["url"] = "https://google.com/"
+		}
+		if _, err := c.Call(ctx, "Network.setCookie", params); err == nil {
+			setCount++
+		}
+	}
+	if setCount == 0 {
+		return errors.New("không thể nạp cookie Google vào profile Chrome")
+	}
+	return nil
+}
+
+func isGoogleSessionCookieName(name string) bool {
+	return name == "SID" || name == "__Secure-1PSID" || name == "__Secure-1PSIDTS" ||
+		name == "__Secure-3PSID" || name == "__Secure-3PSIDTS" || name == "HSID" ||
+		name == "SSID" || name == "APISID" || name == "SAPISID" ||
+		strings.HasPrefix(name, "__Host-")
+}
+
 // EvaluateJS evaluates a JavaScript expression in the current page context and returns the string result.
 func (c *CDPClient) EvaluateJS(ctx context.Context, expression string) (string, error) {
 	params := map[string]interface{}{
@@ -316,6 +362,8 @@ func (c *CDPClient) Close() error {
 	c.closeOnce.Do(func() {
 		c.mu.Lock()
 		c.isClosed = true
+		c.proxyUser = ""
+		c.proxyPass = ""
 		for id, ch := range c.pending {
 			delete(c.pending, id)
 			if ch != nil {
@@ -373,7 +421,7 @@ func FilterGoogleCookies(cookies []CDPCookie) (headerString string, hasPSID bool
 
 	for _, c := range cookies {
 		domain := strings.ToLower(strings.TrimPrefix(c.Domain, "."))
-		if strings.Contains(domain, "google.com") || strings.Contains(domain, "google") {
+		if isAllowedGoogleCookieDomain(domain) {
 			if c.Name != "" && c.Value != "" {
 				score := 1
 				if strings.HasPrefix(domain, "accounts.") {
@@ -397,11 +445,23 @@ func FilterGoogleCookies(cookies []CDPCookie) (headerString string, hasPSID bool
 	_, hasPSIDTS = cookieMap["__Secure-1PSIDTS"]
 
 	var parts []string
-	for k, v := range cookieMap {
+	keys := make([]string, 0, len(cookieMap))
+	for k := range cookieMap {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		v := cookieMap[k]
 		parts = append(parts, fmt.Sprintf("%s=%s", k, v))
 	}
 
 	return strings.Join(parts, "; "), hasPSID, hasPSIDTS
+}
+
+func isAllowedGoogleCookieDomain(domain string) bool {
+	domain = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(domain), "."))
+	return domain == "google.com" || strings.HasSuffix(domain, ".google.com") ||
+		domain == "labs.google" || strings.HasSuffix(domain, ".labs.google")
 }
 
 // IsGeminiOrGoogleTarget returns true if target represents an active Gemini or Google session.
@@ -413,6 +473,7 @@ func IsGeminiOrGoogleTarget(target *CDPTarget) bool {
 	if err != nil {
 		return false
 	}
-	host := strings.ToLower(u.Host)
-	return strings.Contains(host, "google.com")
+	host := strings.ToLower(u.Hostname())
+	host = strings.TrimSuffix(host, ".")
+	return host == "google.com" || strings.HasSuffix(host, ".google.com") || host == "labs.google" || strings.HasSuffix(host, ".labs.google")
 }

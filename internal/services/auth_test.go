@@ -21,10 +21,14 @@ func TestAuthService(t *testing.T) {
 
 	authService := services.NewAuthService(database)
 
-	// Test 1: Default admin login with empty username (auto admin lookup)
-	adminUser, err := authService.Login("", "admin123")
+	if _, err := authService.Register("admin", "1234"); err == nil {
+		t.Fatal("expected a four-character password to be rejected")
+	}
+
+	// Test 1: First-run setup creates the only local administrator.
+	adminUser, err := authService.Register("admin", "admin123456789")
 	if err != nil {
-		t.Fatalf("Default admin login failed: %v", err)
+		t.Fatalf("Initial admin setup failed: %v", err)
 	}
 	if adminUser.Username != "admin" {
 		t.Errorf("Expected username 'admin', got '%s'", adminUser.Username)
@@ -42,13 +46,13 @@ func TestAuthService(t *testing.T) {
 		t.Errorf("Expected error when current password is wrong, got nil")
 	}
 
-	err = authService.ChangePassword(adminUser.ID, "admin123", "newsecret123")
+	err = authService.ChangePassword(adminUser.ID, "admin123456789", "newsecret123")
 	if err != nil {
 		t.Fatalf("ChangePassword failed: %v", err)
 	}
 
 	// Verify login with old password fails
-	_, err = authService.Login("", "admin123")
+	_, err = authService.Login("", "admin123456789")
 	if err == nil {
 		t.Errorf("Expected old password to fail, but succeeded")
 	}
@@ -62,22 +66,16 @@ func TestAuthService(t *testing.T) {
 		t.Errorf("Expected same user ID %d, got %d", adminUser.ID, updatedUser.ID)
 	}
 
-	// Test 4: Register new user
-	newUser, err := authService.Register("developer", "devpass123")
-	if err != nil {
-		t.Fatalf("Register failed: %v", err)
+	if err := authService.ChangePassword(adminUser.ID, "newsecret123", "abcde"); err != nil {
+		t.Fatalf("ChangePassword should accept a five-character password: %v", err)
 	}
-	if newUser.Username != "developer" {
-		t.Errorf("Expected username 'developer', got '%s'", newUser.Username)
+	if _, err := authService.Login("", "abcde"); err != nil {
+		t.Fatalf("Login with a five-character password failed: %v", err)
 	}
 
-	// Test 5: Login with newly registered user
-	loggedInNewUser, err := authService.Login("developer", "devpass123")
-	if err != nil {
-		t.Fatalf("Login with registered user failed: %v", err)
-	}
-	if loggedInNewUser.ID != newUser.ID {
-		t.Errorf("Expected ID %d, got %d", newUser.ID, loggedInNewUser.ID)
+	// Test 4: Further registration is disabled after first-run setup.
+	if _, err := authService.Register("developer", "devpass123456"); err == nil {
+		t.Fatal("expected registration to be rejected after first-run setup")
 	}
 }
 

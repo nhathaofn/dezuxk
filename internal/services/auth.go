@@ -3,7 +3,9 @@ package services
 import (
 	"errors"
 	"strings"
+	"sync"
 
+	"dezuxk/internal/config"
 	"dezuxk/internal/db"
 	"dezuxk/internal/models"
 
@@ -12,7 +14,8 @@ import (
 
 // AuthService handles authentication, user management, and credential updates.
 type AuthService struct {
-	database *db.DB
+	database   *db.DB
+	registerMu sync.Mutex
 }
 
 // NewAuthService creates a new AuthService instance.
@@ -58,18 +61,15 @@ func (s *AuthService) ChangePassword(userID int64, currentPassword, newPassword 
 	if strings.TrimSpace(currentPassword) == "" {
 		return errors.New("Vui lòng nhập mật khẩu hiện tại")
 	}
-	if len(strings.TrimSpace(newPassword)) < 4 {
-		return errors.New("Mật khẩu mới phải có ít nhất 4 ký tự")
+	if len(strings.TrimSpace(newPassword)) < config.MinPasswordLength {
+		return errors.New("Mật khẩu mới phải có ít nhất 5 ký tự")
 	}
 
 	var user *models.User
-	var err error
-
-	if userID > 0 {
-		user, err = s.database.GetUserByID(userID)
-	} else {
-		user, err = s.database.GetAdminUser()
+	if userID <= 0 {
+		return errors.New("chưa xác định người dùng hiện tại")
 	}
+	user, err := s.database.GetUserByID(userID)
 
 	if err != nil || user == nil {
 		return errors.New("Không tìm thấy tài khoản người dùng")
@@ -89,12 +89,23 @@ func (s *AuthService) ChangePassword(userID int64, currentPassword, newPassword 
 
 // Register registers a new user into SQLite database.
 func (s *AuthService) Register(username, password string) (*models.UserResponse, error) {
+	s.registerMu.Lock()
+	defer s.registerMu.Unlock()
+
 	username = strings.TrimSpace(username)
 	if len(username) < 3 {
 		return nil, errors.New("Tên đăng nhập phải có ít nhất 3 ký tự")
 	}
-	if len(password) < 4 {
-		return nil, errors.New("Mật khẩu phải có ít nhất 4 ký tự")
+	if len(password) < config.MinPasswordLength {
+		return nil, errors.New("Mật khẩu phải có ít nhất 5 ký tự")
+	}
+
+	userCount, err := s.database.CountUsers()
+	if err != nil {
+		return nil, errors.New("Không thể kiểm tra trạng thái thiết lập tài khoản")
+	}
+	if userCount > 0 {
+		return nil, errors.New("Đăng ký quản trị viên chỉ được phép trong lần thiết lập đầu tiên")
 	}
 
 	existing, _ := s.database.GetUserByUsername(username)

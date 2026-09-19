@@ -6,7 +6,7 @@ import { Loader2 } from "lucide-react";
 
 const pageTitles: Record<string, string> = {
   "/dashboard": "Dashboard",
-  "/accounts": "Tài khoản Google & Flow",
+  "/accounts": "Tài khoản Google · Flow + Gemini",
   "/routes": "Routes",
   "/upstreams": "Upstreams",
   "/api-keys": "API Keys",

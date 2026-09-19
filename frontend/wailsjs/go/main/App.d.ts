@@ -14,19 +14,25 @@ export function ChangePassword(arg1:string,arg2:string):Promise<void>;
 
 export function DeleteGoogleAccount(arg1:string):Promise<void>;
 
-export function ExportAccountsBackupDialog():Promise<models.BackupExportResult>;
+export function ExportAccountsBackupDialog(arg1:string):Promise<models.BackupExportResult>;
 
 export function GetCurrentUser():Promise<models.UserResponse>;
 
 export function GetGatewayStatus():Promise<models.GatewayStatus>;
 
+export function GetGoogleAccountProxy(arg1:string):Promise<string>;
+
 export function GetGoogleLoginStatus(arg1:string):Promise<models.LoginSessionStatus>;
+
+export function GetLiveGoogleAccountMetrics(arg1:string):Promise<models.LiveAccountMetrics>;
 
 export function GetSettings():Promise<models.AppSettings>;
 
-export function ImportAccountsBackupDialog():Promise<models.RestoreResult>;
+export function ImportAccountsBackupDialog(arg1:string):Promise<models.RestoreResult>;
 
 export function ImportGLabsBackup(arg1:string):Promise<models.RestoreResult>;
+
+export function IsAuthSetupRequired():Promise<boolean>;
 
 export function ListGoogleAccounts():Promise<Array<models.GoogleAccountResponse>>;
 
@@ -35,6 +41,8 @@ export function Login(arg1:string,arg2:string):Promise<models.UserResponse>;
 export function Logout():Promise<boolean>;
 
 export function OpenGoogleAccountBrowser(arg1:string):Promise<void>;
+
+export function PurgeGoogleAccountCaches():Promise<models.CachePurgeResult>;
 
 export function RefreshAllGoogleAccounts():Promise<Array<models.GoogleAccountResponse>>;
 
@@ -46,7 +54,7 @@ export function SaveGoogleAccountProxy(arg1:string,arg2:string):Promise<void>;
 
 export function StartGateway(arg1:number):Promise<models.GatewayStatus>;
 
-export function StartGoogleLogin(arg1:string,arg2:string):Promise<models.LoginSessionStatus>;
+export function StartGoogleLogin(arg1:string):Promise<models.LoginSessionStatus>;
 
 export function StopGateway():Promise<models.GatewayStatus>;
 

@@ -7,9 +7,11 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"dezuxk/internal/config"
+	"dezuxk/internal/crypto"
 	"dezuxk/internal/models"
 
 	"golang.org/x/crypto/bcrypt"
@@ -18,7 +20,19 @@ import (
 
 // DB wraps the database connection.
 type DB struct {
-	conn *sql.DB
+	conn            *sql.DB
+	cipherKey       []byte
+	legacyCipherKey []byte
+}
+
+// CipherKey returns the current encryption key.
+func (d *DB) CipherKey() []byte {
+	return d.cipherKey
+}
+
+// SetCipherKey sets the encryption key (useful for tests).
+func (d *DB) SetCipherKey(k []byte) {
+	d.cipherKey = k
 }
 
 // InitDB initializes SQLite database connection, applies migrations and seeds default data.
@@ -29,7 +43,7 @@ func InitDB(dbPath string) (*DB, error) {
 
 	dir := filepath.Dir(dbPath)
 	if dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := os.MkdirAll(dir, 0700); err != nil {
 			return nil, fmt.Errorf("failed to create database directory: %w", err)
 		}
 	}
@@ -55,6 +69,27 @@ func InitDB(dbPath string) (*DB, error) {
 		log.Printf("Warning: failed to seed default admin: %v", err)
 	}
 
+	// Initialize machine-bound encryption key for sensitive data protection
+	key, err := crypto.GetOrInitMasterKey(db)
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("failed to initialize encryption key: %w", err)
+	}
+	db.cipherKey = key
+	if legacyKey, legacyErr := crypto.GetLegacyMasterKey(db); legacyErr == nil {
+		// Keep this only in memory while upgrading records encrypted by older
+		// versions. New writes always use the current DPAPI-protected key.
+		db.legacyCipherKey = legacyKey
+	}
+
+	// Convert any legacy plaintext session material while the database key is available.
+	// Google passwords/recovery emails are intentionally removed; the application never
+	// needs them to maintain a browser session.
+	if err := db.migrateSensitiveFields(); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("sensitive-data migration failed: %w", err)
+	}
+
 	return db, nil
 }
 
@@ -75,7 +110,14 @@ func (d *DB) Checkpoint(truncate bool) error {
 func (d *DB) Close() error {
 	if d.conn != nil {
 		_ = d.Checkpoint(true)
-		return d.conn.Close()
+		err := d.conn.Close()
+		for i := range d.cipherKey {
+			d.cipherKey[i] = 0
+		}
+		for i := range d.legacyCipherKey {
+			d.legacyCipherKey[i] = 0
+		}
+		return err
 	}
 	return nil
 }
@@ -126,6 +168,10 @@ func (d *DB) migrate() error {
 	d.addColumnIfNotExists("google_accounts", "user_agent", "TEXT DEFAULT ''")
 	d.addColumnIfNotExists("google_accounts", "password", "TEXT DEFAULT ''")
 	d.addColumnIfNotExists("google_accounts", "recovery_email", "TEXT DEFAULT ''")
+	if _, err := d.conn.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_google_accounts_email
+		ON google_accounts(email) WHERE email <> ''`); err != nil {
+		return fmt.Errorf("failed to enforce unique Google account email: %w", err)
+	}
 
 	return nil
 }
@@ -145,7 +191,16 @@ func (d *DB) seedDefaultAdmin() error {
 	}
 
 	if count == 0 {
-		hashed, err := bcrypt.GenerateFromPassword([]byte(config.DefaultAdminPass), bcrypt.DefaultCost)
+		initialPassword := strings.TrimSpace(os.Getenv(config.AdminPasswordEnv))
+		if initialPassword == "" {
+			log.Printf("[DB] No admin user exists. Complete first-run setup to create one.")
+			return nil
+		}
+		if len(initialPassword) < config.MinPasswordLength {
+			return fmt.Errorf("%s must contain at least 5 characters", config.AdminPasswordEnv)
+		}
+
+		hashed, err := bcrypt.GenerateFromPassword([]byte(initialPassword), bcrypt.DefaultCost)
 		if err != nil {
 			return err
 		}
@@ -160,10 +215,19 @@ func (d *DB) seedDefaultAdmin() error {
 		if err != nil {
 			return err
 		}
-		log.Println("[DB] Initialized default admin account in SQLite.")
+		log.Println("[DB] Initialized the configured admin account in SQLite.")
 	}
 
 	return nil
+}
+
+// CountUsers returns the number of local application users.
+func (d *DB) CountUsers() (int, error) {
+	var count int
+	if err := d.conn.QueryRow("SELECT COUNT(*) FROM users").Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 // GetSetting retrieves a configuration value from SQLite by key.

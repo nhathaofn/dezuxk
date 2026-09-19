@@ -84,6 +84,7 @@ func fileExists(path string) bool {
 
 func queryRegistryAppPath(hive string) (string, error) {
 	cmd := exec.Command("reg", "query", hive+`\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe`, "/ve")
+	configureBackgroundCommand(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err
@@ -113,5 +114,7 @@ func KillProcessTree(pid int) {
 	}
 	// On Windows, use taskkill /F /T /PID to terminate the whole tree
 	killCmd := exec.Command("taskkill", "/F", "/T", "/PID", fmt.Sprintf("%d", pid))
+	configureBackgroundCommand(killCmd)
 	_ = killCmd.Run()
+	forgetBackgroundJob(pid)
 }

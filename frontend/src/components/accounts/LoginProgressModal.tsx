@@ -80,10 +80,10 @@ export function LoginProgressModal({
           </div>
           <div>
             <h2 className="text-base font-semibold text-foreground">
-              Đăng nhập Google qua Chrome thật
+              Đăng nhập Google · Flow + Gemini
             </h2>
             <p className="text-xs text-muted-foreground">
-              Mở cửa sổ Chrome độc lập, an toàn và chống chặn bot
+              Một profile Chrome độc lập dùng chung cho Flow và Gemini
             </p>
           </div>
         </div>

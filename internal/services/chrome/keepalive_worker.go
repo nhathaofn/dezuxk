@@ -18,19 +18,31 @@ import (
 
 // KeepAliveWorker periodically refreshes Google account sessions in the background.
 type KeepAliveWorker struct {
-	database  *db.DB
-	ticker    *time.Ticker
-	stopChan  chan struct{}
-	isRunning bool
-	mu        sync.Mutex
+	database    *db.DB
+	ticker      *time.Ticker
+	stopChan    chan struct{}
+	isRunning   bool
+	refreshFunc func(*models.GoogleAccount) error
+	mu          sync.Mutex
+	processMu   sync.Mutex
+	processes   map[int]struct{}
 }
 
 // NewKeepAliveWorker creates a new worker instance.
 func NewKeepAliveWorker(database *db.DB) *KeepAliveWorker {
 	return &KeepAliveWorker{
-		database: database,
-		stopChan: make(chan struct{}),
+		database:  database,
+		stopChan:  make(chan struct{}),
+		processes: make(map[int]struct{}),
 	}
+}
+
+// SetRefreshFunc lets the owning service provide the shared per-account lock.
+// Background refreshes must not race with an interactive browser or manual refresh.
+func (w *KeepAliveWorker) SetRefreshFunc(fn func(*models.GoogleAccount) error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.refreshFunc = fn
 }
 
 // Start begins the periodic refresh loop (checks every 20 minutes, refreshes accounts older than 3 hours).
@@ -41,7 +53,10 @@ func (w *KeepAliveWorker) Start() {
 		return
 	}
 	w.isRunning = true
+	stopChan := make(chan struct{})
+	w.stopChan = stopChan
 	w.ticker = time.NewTicker(20 * time.Minute)
+	ticker := w.ticker
 	w.mu.Unlock()
 
 	log.Println("[KeepAliveWorker] Started background session refresh worker.")
@@ -49,9 +64,9 @@ func (w *KeepAliveWorker) Start() {
 	go func() {
 		for {
 			select {
-			case <-w.stopChan:
+			case <-stopChan:
 				return
-			case <-w.ticker.C:
+			case <-ticker.C:
 				w.checkAndRefreshAll()
 			}
 		}
@@ -61,16 +76,53 @@ func (w *KeepAliveWorker) Start() {
 // Stop halts the worker gracefully.
 func (w *KeepAliveWorker) Stop() {
 	w.mu.Lock()
-	defer w.mu.Unlock()
-	if !w.isRunning {
+	if w.isRunning {
+		w.isRunning = false
+		if w.ticker != nil {
+			w.ticker.Stop()
+		}
+		close(w.stopChan)
+	}
+	w.mu.Unlock()
+
+	w.stopManagedProcesses()
+	log.Println("[KeepAliveWorker] Stopped.")
+}
+
+func (w *KeepAliveWorker) startManagedProcess(cmd *exec.Cmd) error {
+	if err := startBackgroundCommand(cmd); err != nil {
+		return err
+	}
+	if cmd.Process == nil {
+		return fmt.Errorf("Chrome process was not created")
+	}
+	w.processMu.Lock()
+	w.processes[cmd.Process.Pid] = struct{}{}
+	w.processMu.Unlock()
+	return nil
+}
+
+func (w *KeepAliveWorker) unregisterManagedProcess(pid int) {
+	if pid <= 0 {
 		return
 	}
-	w.isRunning = false
-	if w.ticker != nil {
-		w.ticker.Stop()
+	w.processMu.Lock()
+	delete(w.processes, pid)
+	w.processMu.Unlock()
+}
+
+func (w *KeepAliveWorker) stopManagedProcesses() {
+	w.processMu.Lock()
+	pids := make([]int, 0, len(w.processes))
+	for pid := range w.processes {
+		pids = append(pids, pid)
 	}
-	close(w.stopChan)
-	log.Println("[KeepAliveWorker] Stopped.")
+	w.processes = make(map[int]struct{})
+	w.processMu.Unlock()
+
+	for _, pid := range pids {
+		KillProcessTree(pid)
+	}
 }
 
 func (w *KeepAliveWorker) checkAndRefreshAll() {
@@ -101,8 +153,17 @@ func (w *KeepAliveWorker) checkAndRefreshAll() {
 
 		if needsRefresh {
 			log.Printf("[KeepAliveWorker] Refreshing session for %s (%s)...\n", acc.Name, acc.Email)
-			if err := w.RefreshAccount(acc); err != nil {
-				log.Printf("[KeepAliveWorker] Failed refreshing %s: %v\n", acc.Email, err)
+			w.mu.Lock()
+			refreshFunc := w.refreshFunc
+			w.mu.Unlock()
+			var refreshErr error
+			if refreshFunc != nil {
+				refreshErr = refreshFunc(acc)
+			} else {
+				refreshErr = w.RefreshAccount(acc)
+			}
+			if refreshErr != nil {
+				log.Printf("[KeepAliveWorker] Failed refreshing %s: %v\n", acc.Email, refreshErr)
 			} else {
 				log.Printf("[KeepAliveWorker] Successfully refreshed %s.\n", acc.Email)
 			}
@@ -156,22 +217,25 @@ func (w *KeepAliveWorker) RefreshAccount(acc *models.GoogleAccount) error {
 		}
 	}
 
-	// Remove stale Chromium lockfiles if left behind by an unclean shutdown
-	_ = os.Remove(filepath.Join(acc.ProfileDir, "lockfile"))
-	_ = os.Remove(filepath.Join(acc.ProfileDir, "SingletonLock"))
-	_ = os.Remove(filepath.Join(acc.ProfileDir, "SingletonCookie"))
-	_ = os.Remove(filepath.Join(acc.ProfileDir, "SingletonSocket"))
+	// Never delete Chromium lock files: an interactive Chrome process may own the
+	// profile. Let the caller retry after the profile is released instead.
+	for _, lockName := range []string{"lockfile", "SingletonLock", "SingletonCookie", "SingletonSocket"} {
+		if _, statErr := os.Stat(filepath.Join(acc.ProfileDir, lockName)); statErr == nil {
+			return fmt.Errorf("profile đang được Chrome sử dụng (%s)", lockName)
+		}
+	}
 
 	args = append(args, targetURL)
 
 	cmd := exec.Command(chromePath, args...)
-	if err := cmd.Start(); err != nil {
+	if err := w.startManagedProcess(cmd); err != nil {
 		return fmt.Errorf("failed to start headless chrome: %w", err)
 	}
 
 	defer func() {
 		if cmd.Process != nil {
 			KillProcessTree(cmd.Process.Pid)
+			w.unregisterManagedProcess(cmd.Process.Pid)
 		}
 	}()
 
@@ -208,9 +272,18 @@ func (w *KeepAliveWorker) RefreshAccount(acc *models.GoogleAccount) error {
 	if proxyUser != "" && proxyPass != "" {
 		_ = client.EnableProxyAuth(ctx, proxyUser, proxyPass)
 	}
+	if err := ensureGoogleSessionCookies(ctx, client, acc.Cookies); err != nil {
+		return fmt.Errorf("failed to seed Google session: %w", err)
+	}
 
 	// Let Chrome interact silently for 5 seconds to rotate __Secure-1PSIDTS
 	time.Sleep(5 * time.Second)
+	// Warm both Google product origins so one managed profile keeps a complete
+	// shared session even when the account was originally added from one side.
+	hydratedSnlm0e, hydrateErr := hydrateGoogleServiceSession(ctx, client)
+	if hydrateErr != nil {
+		log.Printf("[KeepAliveWorker] Warning: could not warm both Google services for %s: %v\n", acc.Email, hydrateErr)
+	}
 
 	// Fetch updated cookies
 	cookies, err := client.GetCookies(ctx)
@@ -225,26 +298,27 @@ func (w *KeepAliveWorker) RefreshAccount(acc *models.GoogleAccount) error {
 	}
 
 	// Fetch fresh SNlM0e token if this is a Gemini target
-	snlm0e := ""
+	snlm0e := hydratedSnlm0e
 	if strings.Contains(targetURL, "gemini.google.com") {
-		snlm0e, _ = client.EvaluateJS(ctx, `(function() {
+		if refreshedToken, tokenErr := client.EvaluateJS(ctx, `(function() {
 			if (window.WIZ_global_data && window.WIZ_global_data.SNlM0e) {
 				return window.WIZ_global_data.SNlM0e;
 			}
 			var match = document.documentElement.innerHTML.match(/"SNlM0e":"([^"]+)"/);
 			if (match && match[1]) return match[1];
 			return "";
-		})()`)
+		})()`); tokenErr == nil && refreshedToken != "" {
+			snlm0e = refreshedToken
+		}
 	}
 
-	// Extract dynamic credits and tier if available from Flow/Labs
-	dynCredits, dynTier := ExtractAccountCreditsAndTier(ctx, client)
-	if dynCredits >= 0 {
-		log.Printf("[KeepAliveWorker] Live credits detected for %s: %d (tier: %s)\n", acc.Email, dynCredits, dynTier)
+	// Persist session material only. Live Flow/Gemini quota is fetched on demand
+	// and is intentionally not written to SQLite.
+	_, dynTier := ExtractAccountCreditsAndTier(ctx, client)
+	if dynTier != "" {
+		log.Printf("[KeepAliveWorker] Live plan detected for %s: %s\n", acc.Email, dynTier)
 	}
-
-	// Persist fresh tokens, credits and tier
-	if err := w.database.UpdateGoogleAccountSessionData(acc.ID, cookieHeader, snlm0e, dynCredits, dynTier); err != nil {
+	if err := w.database.UpdateGoogleAccountSessionData(acc.ID, cookieHeader, snlm0e, -1, dynTier); err != nil {
 		return fmt.Errorf("failed to persist refreshed cookies: %w", err)
 	}
 
@@ -268,10 +342,10 @@ func ExtractAccountCreditsAndTier(ctx context.Context, client *CDPClient) (int, 
 				while (node = walker.nextNode()) {
 					var txt = (node.nodeValue || "").trim();
 					if (!txt || (node.parentElement && node.parentElement.matches("style, script, noscript"))) continue;
-					var m = txt.match(/([\d,]+)\s*(?:Google\s*Flow\s*)?(?:credits?|t\xEDn\s*d\u1EE5ng)/i) ||
-					        txt.match(/(?:credits?|t\xEDn\s*d\u1EE5ng)\s*:\s*([\d,]+)/i);
+				var m = txt.match(/([\d.,]+)\s*(?:Google\s*Flow\s*)?(?:credits?|t\xEDn\s*d\u1EE5ng)/i) ||
+				        txt.match(/(?:credits?|t\xEDn\s*d\u1EE5ng)\s*:\s*([\d.,]+)/i);
 					if (m && m[1]) {
-						var val = parseInt(m[1].replace(/,/g, ""), 10);
+				var val = parseInt(m[1].replace(/[.,]/g, ""), 10);
 						if (!isNaN(val) && val >= 0 && val < 10000000) {
 							return val;
 						}

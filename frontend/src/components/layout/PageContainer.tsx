@@ -11,7 +11,7 @@ export function PageContainer({ title, children, className }: PageContainerProps
   return (
     <div
       className={cn(
-        "flex w-full flex-col items-center justify-center text-center p-8 select-none",
+        "flex w-full min-h-[60vh] flex-col items-center justify-center text-center p-8 select-none",
         className
       )}
     >

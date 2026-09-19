@@ -14,6 +14,7 @@ import (
 	"dezuxk/internal/config"
 	"dezuxk/internal/db"
 	"dezuxk/internal/models"
+	"dezuxk/internal/security"
 	"dezuxk/internal/services"
 )
 
@@ -49,9 +50,18 @@ func (a *App) startup(ctx context.Context) {
 	}
 
 	a.database = database
+	if err := security.HardenDatabase(a.cfg.DBPath); err != nil {
+		log.Printf("[App] Warning: could not harden database ACL: %v", err)
+	}
 	a.authService = services.NewAuthService(database)
-	a.accountService = services.NewAccountService(database, "data")
-	a.accountService.StartBackgroundWorkers()
+	a.accountService = services.NewAccountService(database, a.cfg.DataPath)
+	if err := security.HardenDirectory(a.cfg.DataPath); err != nil {
+		log.Printf("[App] Warning: could not harden profile ACL: %v", err)
+	}
+	// Background Chrome/session refresh is intentionally disabled while the
+	// account-management base is being built. Google requests must be explicit
+	// (login, manual refresh, or manual quota sync) until the gateway data plane
+	// can publish usage events without polling Google.
 	log.Println("[App] SQLite database initialized and ready.")
 
 	// Retrieve saved port from SQLite settings, fallback to config
@@ -71,6 +81,7 @@ func (a *App) startup(ctx context.Context) {
 // shutdown is called when the app is closing.
 func (a *App) shutdown(ctx context.Context) {
 	if a.accountService != nil {
+		a.accountService.CleanupActiveSessions()
 		a.accountService.StopBackgroundWorkers()
 	}
 	if a.gatewayService != nil {
@@ -87,6 +98,9 @@ func (a *App) shutdown(ctx context.Context) {
 func (a *App) Login(username, password string) (*models.UserResponse, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.authService == nil {
+		return nil, errors.New("dịch vụ xác thực chưa sẵn sàng")
+	}
 
 	user, err := a.authService.Login(username, password)
 	if err != nil {
@@ -99,14 +113,14 @@ func (a *App) Login(username, password string) (*models.UserResponse, error) {
 
 // ChangePassword changes the current user's password in SQLite.
 func (a *App) ChangePassword(currentPassword, newPassword string) error {
-	a.mu.RLock()
-	var userID int64
-	if a.currentUser != nil {
-		userID = a.currentUser.ID
+	user, err := a.requireAdmin()
+	if err != nil {
+		return err
 	}
-	a.mu.RUnlock()
-
-	return a.authService.ChangePassword(userID, currentPassword, newPassword)
+	if a.authService == nil {
+		return errors.New("dịch vụ xác thực chưa sẵn sàng")
+	}
+	return a.authService.ChangePassword(user.ID, currentPassword, newPassword)
 }
 
 // Register registers a new user with username and password.
@@ -114,6 +128,9 @@ func (a *App) Register(username, password string) (*models.UserResponse, error) 
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	if a.authService == nil {
+		return nil, errors.New("dịch vụ xác thực chưa sẵn sàng")
+	}
 	user, err := a.authService.Register(username, password)
 	if err != nil {
 		return nil, err
@@ -127,14 +144,32 @@ func (a *App) Register(username, password string) (*models.UserResponse, error) 
 func (a *App) GetCurrentUser() *models.UserResponse {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return a.currentUser
+	if a.currentUser == nil {
+		return nil
+	}
+	copy := *a.currentUser
+	return &copy
+}
+
+// IsAuthSetupRequired reports whether the first local administrator still needs to be created.
+func (a *App) IsAuthSetupRequired() bool {
+	if a.database == nil {
+		return true
+	}
+	count, err := a.database.CountUsers()
+	return err != nil || count == 0
 }
 
 // Logout clears the current active user session.
 func (a *App) Logout() bool {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	a.currentUser = nil
+	a.mu.Unlock()
+	// Do not leave an interactive Google-login Chrome session running after the
+	// local administrator has explicitly logged out.
+	if a.accountService != nil {
+		a.accountService.CleanupActiveSessions()
+	}
 	return true
 }
 
@@ -146,8 +181,26 @@ func (a *App) GetGatewayStatus() *models.GatewayStatus {
 	return a.gatewayService.GetStatus()
 }
 
+// requireAdmin is the backend authorization boundary for settings and Google account operations.
+// Frontend route protection is only a UX feature and is never treated as authorization.
+func (a *App) requireAdmin() (*models.UserResponse, error) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.currentUser == nil {
+		return nil, errors.New("chưa đăng nhập")
+	}
+	if a.currentUser.Role != "admin" {
+		return nil, errors.New("không có quyền thực hiện thao tác này")
+	}
+	copy := *a.currentUser
+	return &copy, nil
+}
+
 // ToggleGateway toggles the gateway server on or off.
 func (a *App) ToggleGateway() (*models.GatewayStatus, error) {
+	if _, err := a.requireAdmin(); err != nil {
+		return nil, err
+	}
 	if a.gatewayService == nil {
 		a.gatewayService = services.NewGatewayService(a.cfg.GatewayPort)
 	}
@@ -156,6 +209,9 @@ func (a *App) ToggleGateway() (*models.GatewayStatus, error) {
 
 // StartGateway starts the gateway server on a specified port.
 func (a *App) StartGateway(port int) (*models.GatewayStatus, error) {
+	if _, err := a.requireAdmin(); err != nil {
+		return nil, err
+	}
 	if a.gatewayService == nil {
 		a.gatewayService = services.NewGatewayService(port)
 	}
@@ -164,6 +220,9 @@ func (a *App) StartGateway(port int) (*models.GatewayStatus, error) {
 
 // StopGateway stops the running gateway server.
 func (a *App) StopGateway() (*models.GatewayStatus, error) {
+	if _, err := a.requireAdmin(); err != nil {
+		return nil, err
+	}
 	if a.gatewayService == nil {
 		return &models.GatewayStatus{IsRunning: false, IP: "127.0.0.1", Port: a.cfg.GatewayPort}, nil
 	}
@@ -172,6 +231,9 @@ func (a *App) StopGateway() (*models.GatewayStatus, error) {
 
 // GetSettings returns current application settings.
 func (a *App) GetSettings() (*models.AppSettings, error) {
+	if _, err := a.requireAdmin(); err != nil {
+		return nil, err
+	}
 	if a.gatewayService == nil {
 		return nil, errors.New("gateway service not initialized")
 	}
@@ -186,6 +248,9 @@ func (a *App) GetSettings() (*models.AppSettings, error) {
 
 // UpdateGatewayPort updates the configured port, persists to SQLite, and updates the server.
 func (a *App) UpdateGatewayPort(port int) (*models.GatewayStatus, error) {
+	if _, err := a.requireAdmin(); err != nil {
+		return nil, err
+	}
 	if port <= 0 || port > 65535 {
 		return nil, errors.New("Cổng không hợp lệ (hợp lệ từ 1024 đến 65535)")
 	}
@@ -207,22 +272,55 @@ func (a *App) UpdateGatewayPort(port int) (*models.GatewayStatus, error) {
 
 // ListGoogleAccounts returns all saved Google accounts in SQLite.
 func (a *App) ListGoogleAccounts() ([]*models.GoogleAccountResponse, error) {
+	if _, err := a.requireAdmin(); err != nil {
+		return nil, err
+	}
 	if a.accountService == nil {
 		return nil, errors.New("account service not initialized")
 	}
 	return a.accountService.ListAccounts()
 }
 
-// StartGoogleLogin initiates an interactive Chrome login session.
-func (a *App) StartGoogleLogin(service, proxy string) (*models.LoginSessionStatus, error) {
+// GetLiveGoogleAccountMetrics reads current Flow and Gemini quota from the
+// authenticated managed profile without storing quota in SQLite.
+func (a *App) GetLiveGoogleAccountMetrics(accountID string) (*models.LiveAccountMetrics, error) {
+	if _, err := a.requireAdmin(); err != nil {
+		return nil, err
+	}
 	if a.accountService == nil {
 		return nil, errors.New("account service not initialized")
 	}
-	return a.accountService.StartLogin(service, proxy)
+	return a.accountService.GetLiveMetrics(accountID)
+}
+
+// GetGoogleAccountProxy returns the proxy only when the user explicitly opens
+// the account's proxy editor. It is never included in account list responses.
+func (a *App) GetGoogleAccountProxy(accountID string) (string, error) {
+	if _, err := a.requireAdmin(); err != nil {
+		return "", err
+	}
+	if a.accountService == nil {
+		return "", errors.New("account service not initialized")
+	}
+	return a.accountService.GetAccountProxy(accountID)
+}
+
+// StartGoogleLogin initiates one interactive Google login session for both Flow and Gemini.
+func (a *App) StartGoogleLogin(proxy string) (*models.LoginSessionStatus, error) {
+	if _, err := a.requireAdmin(); err != nil {
+		return nil, err
+	}
+	if a.accountService == nil {
+		return nil, errors.New("account service not initialized")
+	}
+	return a.accountService.StartLogin(proxy)
 }
 
 // GetGoogleLoginStatus queries the current progress of an active login session.
 func (a *App) GetGoogleLoginStatus(sessionID string) (*models.LoginSessionStatus, error) {
+	if _, err := a.requireAdmin(); err != nil {
+		return nil, err
+	}
 	if a.accountService == nil {
 		return nil, errors.New("account service not initialized")
 	}
@@ -231,6 +329,9 @@ func (a *App) GetGoogleLoginStatus(sessionID string) (*models.LoginSessionStatus
 
 // CancelGoogleLogin terminates an ongoing login session.
 func (a *App) CancelGoogleLogin(sessionID string) error {
+	if _, err := a.requireAdmin(); err != nil {
+		return err
+	}
 	if a.accountService == nil {
 		return errors.New("account service not initialized")
 	}
@@ -239,6 +340,9 @@ func (a *App) CancelGoogleLogin(sessionID string) error {
 
 // DeleteGoogleAccount removes an account from the pool.
 func (a *App) DeleteGoogleAccount(accountID string) error {
+	if _, err := a.requireAdmin(); err != nil {
+		return err
+	}
 	if a.accountService == nil {
 		return errors.New("account service not initialized")
 	}
@@ -247,6 +351,9 @@ func (a *App) DeleteGoogleAccount(accountID string) error {
 
 // RefreshGoogleAccount manually triggers a headless refresh of an account's session tokens.
 func (a *App) RefreshGoogleAccount(accountID string) (*models.GoogleAccountResponse, error) {
+	if _, err := a.requireAdmin(); err != nil {
+		return nil, err
+	}
 	if a.accountService == nil {
 		return nil, errors.New("account service not initialized")
 	}
@@ -255,6 +362,9 @@ func (a *App) RefreshGoogleAccount(accountID string) (*models.GoogleAccountRespo
 
 // TestGoogleAccount verifies live connectivity of an account against Google.
 func (a *App) TestGoogleAccount(accountID string) (*models.AccountTestResult, error) {
+	if _, err := a.requireAdmin(); err != nil {
+		return nil, err
+	}
 	if a.accountService == nil {
 		return nil, errors.New("account service not initialized")
 	}
@@ -263,6 +373,9 @@ func (a *App) TestGoogleAccount(accountID string) (*models.AccountTestResult, er
 
 // OpenGoogleAccountBrowser opens a dedicated Chrome browser window for the specified account.
 func (a *App) OpenGoogleAccountBrowser(accountID string) error {
+	if _, err := a.requireAdmin(); err != nil {
+		return err
+	}
 	if a.accountService == nil {
 		return errors.New("account service not initialized")
 	}
@@ -271,6 +384,9 @@ func (a *App) OpenGoogleAccountBrowser(accountID string) error {
 
 // ToggleGoogleAccount switches an account between ACTIVE and DISABLED.
 func (a *App) ToggleGoogleAccount(accountID string, active bool) (*models.GoogleAccountResponse, error) {
+	if _, err := a.requireAdmin(); err != nil {
+		return nil, err
+	}
 	if a.accountService == nil {
 		return nil, errors.New("account service not initialized")
 	}
@@ -279,6 +395,9 @@ func (a *App) ToggleGoogleAccount(accountID string, active bool) (*models.Google
 
 // RefreshAllGoogleAccounts refreshes all enabled accounts.
 func (a *App) RefreshAllGoogleAccounts() ([]*models.GoogleAccountResponse, error) {
+	if _, err := a.requireAdmin(); err != nil {
+		return nil, err
+	}
 	if a.accountService == nil {
 		return nil, errors.New("account service not initialized")
 	}
@@ -287,6 +406,9 @@ func (a *App) RefreshAllGoogleAccounts() ([]*models.GoogleAccountResponse, error
 
 // AddGoogleAccountManual manually inserts an account with cookies and optional token/proxy.
 func (a *App) AddGoogleAccountManual(input models.ManualAccountInput) (*models.GoogleAccountResponse, error) {
+	if _, err := a.requireAdmin(); err != nil {
+		return nil, err
+	}
 	if a.accountService == nil {
 		return nil, errors.New("account service not initialized")
 	}
@@ -295,6 +417,9 @@ func (a *App) AddGoogleAccountManual(input models.ManualAccountInput) (*models.G
 
 // BulkAddGoogleAccounts imports accounts from a multiline text list.
 func (a *App) BulkAddGoogleAccounts(input models.BulkAddInput) (*models.BulkAddResult, error) {
+	if _, err := a.requireAdmin(); err != nil {
+		return nil, err
+	}
 	if a.accountService == nil {
 		return nil, errors.New("account service not initialized")
 	}
@@ -302,7 +427,10 @@ func (a *App) BulkAddGoogleAccounts(input models.BulkAddInput) (*models.BulkAddR
 }
 
 // ExportAccountsBackupDialog prompts the user with a Windows Save File Dialog and creates a backup zip.
-func (a *App) ExportAccountsBackupDialog() (*models.BackupExportResult, error) {
+func (a *App) ExportAccountsBackupDialog(password string) (*models.BackupExportResult, error) {
+	if _, err := a.requireAdmin(); err != nil {
+		return nil, err
+	}
 	if a.accountService == nil {
 		return nil, errors.New("account service not initialized")
 	}
@@ -322,11 +450,14 @@ func (a *App) ExportAccountsBackupDialog() (*models.BackupExportResult, error) {
 		return nil, nil // User cancelled
 	}
 
-	return a.accountService.ExportBackup(savePath)
+	return a.accountService.ExportBackup(savePath, password)
 }
 
 // ImportAccountsBackupDialog prompts the user with a Windows Open File Dialog to select any backup zip or accounts.json.
-func (a *App) ImportAccountsBackupDialog() (*models.RestoreResult, error) {
+func (a *App) ImportAccountsBackupDialog(password string) (*models.RestoreResult, error) {
+	if _, err := a.requireAdmin(); err != nil {
+		return nil, err
+	}
 	if a.accountService == nil {
 		return nil, errors.New("account service not initialized")
 	}
@@ -345,11 +476,14 @@ func (a *App) ImportAccountsBackupDialog() (*models.RestoreResult, error) {
 		return nil, nil // User cancelled
 	}
 
-	return a.accountService.ImportGLabsBackup(filePath)
+	return a.accountService.ImportGLabsBackup(filePath, password)
 }
 
 // ImportGLabsBackup imports accounts and profiles from a G-Labs backup folder or zip file.
 func (a *App) ImportGLabsBackup(backupPath string) (*models.RestoreResult, error) {
+	if _, err := a.requireAdmin(); err != nil {
+		return nil, err
+	}
 	if a.accountService == nil {
 		return nil, errors.New("account service not initialized")
 	}
@@ -358,6 +492,9 @@ func (a *App) ImportGLabsBackup(backupPath string) (*models.RestoreResult, error
 
 // TestGoogleAccountProxy tests real connectivity, latency, and egress IP for a proxy string.
 func (a *App) TestGoogleAccountProxy(proxy string) (*models.ProxyTestResult, error) {
+	if _, err := a.requireAdmin(); err != nil {
+		return nil, err
+	}
 	if a.accountService == nil {
 		return nil, errors.New("account service not initialized")
 	}
@@ -366,6 +503,9 @@ func (a *App) TestGoogleAccountProxy(proxy string) (*models.ProxyTestResult, err
 
 // SaveGoogleAccountProxy updates the proxy URL for a Google account.
 func (a *App) SaveGoogleAccountProxy(accountID, proxy string) error {
+	if _, err := a.requireAdmin(); err != nil {
+		return err
+	}
 	if a.accountService == nil {
 		return errors.New("account service not initialized")
 	}
@@ -374,6 +514,9 @@ func (a *App) SaveGoogleAccountProxy(accountID, proxy string) error {
 
 // UpdateGoogleAccountFeatures updates image_enabled and video_enabled flags for an account.
 func (a *App) UpdateGoogleAccountFeatures(accountID string, imageEnabled, videoEnabled bool) error {
+	if _, err := a.requireAdmin(); err != nil {
+		return err
+	}
 	if a.accountService == nil {
 		return errors.New("account service not initialized")
 	}
@@ -382,6 +525,9 @@ func (a *App) UpdateGoogleAccountFeatures(accountID string, imageEnabled, videoE
 
 // BulkUpdateGoogleAccountFeatures updates feature flags for all accounts.
 func (a *App) BulkUpdateGoogleAccountFeatures(feature string, enabled bool) error {
+	if _, err := a.requireAdmin(); err != nil {
+		return err
+	}
 	if a.accountService == nil {
 		return errors.New("account service not initialized")
 	}
@@ -390,14 +536,22 @@ func (a *App) BulkUpdateGoogleAccountFeatures(feature string, enabled bool) erro
 
 // UpdateGoogleAccountCredits updates the credit balance of an account directly.
 func (a *App) UpdateGoogleAccountCredits(accountID string, credits int) error {
+	if _, err := a.requireAdmin(); err != nil {
+		return err
+	}
 	if a.accountService == nil {
 		return errors.New("account service not initialized")
 	}
 	return a.accountService.UpdateCredits(accountID, credits)
 }
 
-
-
-
-
-
+// PurgeGoogleAccountCaches clears accumulated browser caches from all account profiles to free disk space.
+func (a *App) PurgeGoogleAccountCaches() (*models.CachePurgeResult, error) {
+	if _, err := a.requireAdmin(); err != nil {
+		return nil, err
+	}
+	if a.accountService == nil {
+		return nil, errors.New("account service not initialized")
+	}
+	return a.accountService.PurgeAccountCaches()
+}

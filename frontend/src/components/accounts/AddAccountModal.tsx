@@ -2,15 +2,15 @@ import React, { useState } from "react";
 import { Dialog } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Globe, Compass, KeyRound, Loader2, Sparkles, AlertCircle } from "lucide-react";
+import { Compass, KeyRound, Loader2, Sparkles, CheckCircle2, XCircle } from "lucide-react";
 import { models } from "@/../wailsjs/go/models";
-import { AddGoogleAccountManual } from "@/../wailsjs/go/main/App";
+import { AddGoogleAccountManual, TestGoogleAccountProxy } from "@/../wailsjs/go/main/App";
 import { toast } from "@/lib/toast";
 
 interface AddAccountModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onStartChromeLogin: (service: "flow" | "gemini", proxy: string) => void;
+  onStartChromeLogin: (proxy: string) => void;
   onSuccessManual: () => void;
 }
 
@@ -21,16 +21,27 @@ export function AddAccountModal({
   onSuccessManual,
 }: AddAccountModalProps) {
   const [tab, setTab] = useState<"chrome" | "cookie">("chrome");
-  const [service, setService] = useState<"flow" | "gemini">("flow");
   const [chromeProxy, setChromeProxy] = useState("");
+  const [chromeProxyTesting, setChromeProxyTesting] = useState(false);
+  const [chromeProxyResult, setChromeProxyResult] = useState<{
+    success: boolean;
+    message: string;
+    latency?: number;
+    ip?: string;
+  } | null>(null);
 
   // Manual Cookie form state
   const [email, setEmail] = useState("");
   const [cookies, setCookies] = useState("");
   const [snlm0e, setSnlm0e] = useState("");
   const [proxy, setProxy] = useState("");
-  const [tier, setTier] = useState("PRO");
-  const [creditsInput, setCreditsInput] = useState("0");
+  const [manualProxyTesting, setManualProxyTesting] = useState(false);
+  const [manualProxyResult, setManualProxyResult] = useState<{
+    success: boolean;
+    message: string;
+    latency?: number;
+    ip?: string;
+  } | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   React.useEffect(() => {
@@ -40,15 +51,83 @@ export function AddAccountModal({
       setEmail("");
       setProxy("");
       setChromeProxy("");
-      setCreditsInput("0");
+      setChromeProxyResult(null);
+      setManualProxyResult(null);
       setIsSubmitting(false);
+    } else {
+      // Cookie and token fields are credentials; clear them when the dialog closes.
+      setCookies("");
+      setSnlm0e("");
+      setProxy("");
+      setChromeProxy("");
+      setChromeProxyResult(null);
+      setManualProxyResult(null);
     }
   }, [isOpen]);
 
+  const handleTestChromeProxy = async () => {
+    if (!chromeProxy.trim()) {
+      toast.error("Thiếu Proxy", "Vui lòng nhập địa chỉ Proxy trước khi kiểm tra.");
+      return;
+    }
+    setChromeProxyTesting(true);
+    setChromeProxyResult(null);
+    try {
+      const res = await TestGoogleAccountProxy(chromeProxy.trim());
+      setChromeProxyResult({
+        success: res.success,
+        message: res.message,
+        latency: res.latencyMs,
+        ip: res.egressIP,
+      });
+    } catch (err: any) {
+      setChromeProxyResult({
+        success: false,
+        message: err?.message || String(err),
+      });
+    } finally {
+      setChromeProxyTesting(false);
+    }
+  };
+
+  const handleTestManualProxy = async () => {
+    if (!proxy.trim()) {
+      toast.error("Thiếu Proxy", "Vui lòng nhập địa chỉ Proxy trước khi kiểm tra.");
+      return;
+    }
+    setManualProxyTesting(true);
+    setManualProxyResult(null);
+    try {
+      const res = await TestGoogleAccountProxy(proxy.trim());
+      setManualProxyResult({
+        success: res.success,
+        message: res.message,
+        latency: res.latencyMs,
+        ip: res.egressIP,
+      });
+    } catch (err: any) {
+      setManualProxyResult({
+        success: false,
+        message: err?.message || String(err),
+      });
+    } finally {
+      setManualProxyTesting(false);
+    }
+  };
+
   const handleManualSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!cookies.trim()) {
+    const cleanCookies = cookies.trim();
+    if (!cleanCookies) {
       toast.error("Thiếu Cookie", "Vui lòng dán chuỗi cookie của tài khoản Google.");
+      return;
+    }
+
+    if (!cleanCookies.includes("__Secure-1PSID=") && !cleanCookies.includes("SID=")) {
+      toast.error(
+        "Cookie không hợp lệ",
+        "Chuỗi cookie phải chứa ít nhất __Secure-1PSID=... hoặc SID=... của Google."
+      );
       return;
     }
 
@@ -56,12 +135,13 @@ export function AddAccountModal({
     try {
       const input = new models.ManualAccountInput({
         email: email.trim(),
-        cookies: cookies.trim(),
+        cookies: cleanCookies,
         snlm0eToken: snlm0e.trim(),
         proxy: proxy.trim(),
-        tier,
-        credits: parseInt(creditsInput, 10) || 0,
-        service,
+        // Quota and tier are read live after import; legacy fields stay neutral.
+        tier: "FREE",
+        credits: 0,
+        service: "flow,gemini",
       });
 
       await AddGoogleAccountManual(input);
@@ -80,18 +160,18 @@ export function AddAccountModal({
       open={isOpen}
       onClose={onClose}
       title="Thêm tài khoản Google"
-      className="bg-[#161922] border-zinc-800 text-zinc-100 max-w-lg"
+      className="max-w-lg"
     >
       <div className="space-y-4 pt-1">
         {/* Navigation Tabs */}
-        <div className="flex border-b border-zinc-800">
+        <div className="flex border-b border-border">
           <button
             type="button"
             onClick={() => setTab("chrome")}
             className={`flex items-center gap-2 pb-2.5 px-3 text-xs font-semibold border-b-2 transition-colors cursor-pointer ${
               tab === "chrome"
                 ? "border-primary text-primary"
-                : "border-transparent text-zinc-400 hover:text-zinc-200"
+                : "border-transparent text-muted-foreground hover:text-foreground"
             }`}
           >
             <Compass className="size-3.5" />
@@ -104,7 +184,7 @@ export function AddAccountModal({
             className={`flex items-center gap-2 pb-2.5 px-3 text-xs font-semibold border-b-2 transition-colors cursor-pointer ${
               tab === "cookie"
                 ? "border-primary text-primary"
-                : "border-transparent text-zinc-400 hover:text-zinc-200"
+                : "border-transparent text-muted-foreground hover:text-foreground"
             }`}
           >
             <KeyRound className="size-3.5" />
@@ -115,71 +195,81 @@ export function AddAccountModal({
         {/* Tab 1: Interactive Chrome Login */}
         {tab === "chrome" && (
           <div className="space-y-4">
-            <div className="rounded-lg bg-zinc-900/80 border border-zinc-800 p-3 text-xs text-zinc-300 space-y-2">
-              <div className="flex items-center gap-2 font-semibold text-zinc-200">
-                <Sparkles className="size-4 text-amber-400 shrink-0" />
-                <span>Cơ chế đăng nhập độc lập & an toàn</span>
+            <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 text-xs text-foreground space-y-2">
+              <div className="flex items-center gap-2 font-semibold">
+                <Sparkles className="size-4 text-primary shrink-0" />
+                <span>Đăng nhập một lần · đồng bộ Flow + Gemini</span>
               </div>
-              <p className="text-zinc-400 leading-relaxed text-[11px]">
-                Một cửa sổ Google Chrome riêng biệt sẽ mở ra. Bạn chỉ cần thực hiện đăng nhập tài khoản Google của mình. Hệ thống sẽ tự động bắt phiên, trích xuất CSRF Token, lưu trữ Profile và hoàn tất quá trình.
+              <p className="text-muted-foreground leading-relaxed text-[11px]">
+                Một cửa sổ Chrome cô lập sẽ mở ra. Sau khi đăng nhập Google, hệ thống tự lưu cùng một profile/cookie cho cả Flow (Veo & Imagen) và Gemini (Chat & Multimodal), không cần chọn dịch vụ.
               </p>
             </div>
 
             <div>
-              <label className="text-xs font-semibold text-zinc-300 block mb-1.5">
-                Dịch vụ mục tiêu:
-              </label>
-              <div className="grid grid-cols-2 gap-3">
-                <button
-                  type="button"
-                  onClick={() => setService("flow")}
-                  className={`flex flex-col items-start p-3 rounded-lg border text-left transition-all cursor-pointer ${
-                    service === "flow"
-                      ? "border-primary bg-primary/10 text-zinc-100"
-                      : "border-zinc-800 bg-zinc-900/50 text-zinc-400 hover:border-zinc-700 hover:text-zinc-300"
-                  }`}
-                >
-                  <span className="text-xs font-bold text-primary">Flow Google (Tạo video/ảnh)</span>
-                  <span className="text-[10px] text-zinc-400 mt-0.5">flow.google.com (Veo & Imagen)</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setService("gemini")}
-                  className={`flex flex-col items-start p-3 rounded-lg border text-left transition-all cursor-pointer ${
-                    service === "gemini"
-                      ? "border-primary bg-primary/10 text-zinc-100"
-                      : "border-zinc-800 bg-zinc-900/50 text-zinc-400 hover:border-zinc-700 hover:text-zinc-300"
-                  }`}
-                >
-                  <span className="text-xs font-bold text-amber-400">Gemini Web / AI Studio</span>
-                  <span className="text-[10px] text-zinc-400 mt-0.5">gemini.google.com (Chat & Multimodal)</span>
-                </button>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-xs font-semibold text-foreground">
+                  Proxy cho trình duyệt (tùy chọn):
+                </label>
+                {chromeProxy.trim() && (
+                  <button
+                    type="button"
+                    onClick={handleTestChromeProxy}
+                    disabled={chromeProxyTesting}
+                    className="text-[11px] text-primary hover:underline font-medium cursor-pointer flex items-center gap-1"
+                  >
+                    {chromeProxyTesting && <Loader2 className="size-2.5 animate-spin" />}
+                    <span>Kiểm tra Proxy</span>
+                  </button>
+                )}
               </div>
-            </div>
+              <div className="flex items-center gap-2">
+                <Input
+                  value={chromeProxy}
+                  onChange={(e) => {
+                    setChromeProxy(e.target.value);
+                    setChromeProxyResult(null);
+                  }}
+                  placeholder="vd: http://103.14.22.1:8080 hoặc ip:port:user:pass"
+                  className="bg-background border-input text-foreground text-xs font-mono placeholder:text-muted-foreground flex-1"
+                />
+              </div>
 
-            <div>
-              <label className="text-xs font-semibold text-zinc-300 block mb-1.5">
-                Proxy cho trình duyệt (tùy chọn):
-              </label>
-              <Input
-                value={chromeProxy}
-                onChange={(e) => setChromeProxy(e.target.value)}
-                placeholder="vd: http://103.14.22.1:8080 hoặc ip:port:user:pass"
-                className="bg-zinc-900/80 border-zinc-700 text-zinc-100 text-xs font-mono placeholder:text-zinc-600"
-              />
-              <p className="text-[11px] text-zinc-400 mt-1">
+              {/* Proxy Test Feedback Badge */}
+              {chromeProxyResult && (
+                <div
+                  className={`mt-1.5 flex items-center gap-1.5 p-1.5 rounded text-[11px] font-mono ${
+                    chromeProxyResult.success
+                      ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20"
+                      : "bg-rose-500/10 text-rose-700 dark:text-rose-400 border border-rose-500/20"
+                  }`}
+                >
+                  {chromeProxyResult.success ? (
+                    <CheckCircle2 className="size-3 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                  ) : (
+                    <XCircle className="size-3 shrink-0 text-destructive" />
+                  )}
+                  <span>
+                    {chromeProxyResult.success
+                      ? `Proxy hợp lệ! Độ trễ: ${chromeProxyResult.latency}ms${
+                          chromeProxyResult.ip ? ` | IP: ${chromeProxyResult.ip}` : ""
+                        }`
+                      : chromeProxyResult.message}
+                  </span>
+                </div>
+              )}
+
+              <p className="text-[11px] text-muted-foreground mt-1">
                 Chrome sẽ mở qua Proxy này để đăng nhập, hạn chế bị Google checkpoint vị trí.
               </p>
             </div>
 
-            <div className="flex items-center justify-end gap-2 pt-3 border-t border-zinc-800">
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-border">
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
                 onClick={onClose}
-                className="text-xs border-zinc-700 bg-zinc-800 text-zinc-200 hover:bg-zinc-700"
+                className="text-xs"
               >
                 Hủy
               </Button>
@@ -188,7 +278,7 @@ export function AddAccountModal({
                 size="sm"
                 onClick={() => {
                   onClose();
-                  onStartChromeLogin(service, chromeProxy.trim());
+                  onStartChromeLogin(chromeProxy.trim());
                 }}
                 className="text-xs bg-primary hover:bg-primary/90 text-primary-foreground font-semibold cursor-pointer"
               >
@@ -203,8 +293,8 @@ export function AddAccountModal({
         {tab === "cookie" && (
           <form onSubmit={handleManualSubmit} className="space-y-3">
             <div>
-              <label className="text-xs font-semibold text-zinc-300 block mb-1">
-                Chuỗi Cookie Google <span className="text-rose-400">*</span>
+              <label className="text-xs font-semibold text-foreground block mb-1">
+                Chuỗi Cookie Google <span className="text-destructive">*</span>
               </label>
               <textarea
                 value={cookies}
@@ -212,87 +302,100 @@ export function AddAccountModal({
                 placeholder="Dán chuỗi cookie (chứa __Secure-1PSID=...; SID=...; __Secure-1PSIDTS=...)"
                 rows={3}
                 required
-                className="w-full rounded-lg bg-zinc-900/90 border border-zinc-700 p-2.5 text-xs font-mono text-zinc-100 placeholder:text-zinc-600 focus:outline-hidden focus:border-primary focus:ring-1 focus:ring-primary transition-all resize-y"
+                className="w-full rounded-lg bg-background border border-input p-2.5 text-xs font-mono text-foreground placeholder:text-muted-foreground focus:outline-hidden focus:border-ring focus:ring-1 focus:ring-ring/50 transition-all resize-y"
               />
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="text-xs font-medium text-zinc-300 block mb-1">
-                  Email (tùy chọn):
+                <label className="text-xs font-medium text-foreground block mb-1">
+                  Email Google <span className="text-destructive">*</span>:
                 </label>
                 <Input
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="vd: myaccount@gmail.com"
-                  className="bg-zinc-900/80 border-zinc-700 text-zinc-100 text-xs font-mono placeholder:text-zinc-600"
+                  required
+                  className="bg-background border-input text-foreground text-xs font-mono placeholder:text-muted-foreground"
                 />
               </div>
 
               <div>
-                <label className="text-xs font-medium text-zinc-300 block mb-1">
+                <label className="text-xs font-medium text-foreground block mb-1">
                   Token SNlM0e (tùy chọn):
                 </label>
                 <Input
                   value={snlm0e}
                   onChange={(e) => setSnlm0e(e.target.value)}
                   placeholder="CSRF Token SNlM0e"
-                  className="bg-zinc-900/80 border-zinc-700 text-zinc-100 text-xs font-mono placeholder:text-zinc-600"
+                  className="bg-background border-input text-foreground text-xs font-mono placeholder:text-muted-foreground"
                 />
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-3">
               <div>
-                <label className="text-xs font-medium text-zinc-300 block mb-1">
-                  Proxy riêng (tùy chọn):
-                </label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs font-medium text-foreground">
+                    Proxy riêng (tùy chọn):
+                  </label>
+                  {proxy.trim() && (
+                    <button
+                      type="button"
+                      onClick={handleTestManualProxy}
+                      disabled={manualProxyTesting}
+                      className="text-[11px] text-primary hover:underline font-medium cursor-pointer flex items-center gap-1"
+                    >
+                      {manualProxyTesting && <Loader2 className="size-2.5 animate-spin" />}
+                      <span>Kiểm tra</span>
+                    </button>
+                  )}
+                </div>
                 <Input
                   value={proxy}
-                  onChange={(e) => setProxy(e.target.value)}
+                  onChange={(e) => {
+                    setProxy(e.target.value);
+                    setManualProxyResult(null);
+                  }}
                   placeholder="http://103.1.2.3:8080"
-                  className="bg-zinc-900/80 border-zinc-700 text-zinc-100 text-xs font-mono placeholder:text-zinc-600"
+                  className="bg-background border-input text-foreground text-xs font-mono placeholder:text-muted-foreground"
                 />
+                {manualProxyResult && (
+                  <div
+                    className={`mt-1 flex items-center gap-1 p-1 rounded text-[10px] font-mono ${
+                      manualProxyResult.success
+                        ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20"
+                        : "bg-rose-500/10 text-rose-700 dark:text-rose-400 border border-rose-500/20"
+                    }`}
+                  >
+                    {manualProxyResult.success ? (
+                      <CheckCircle2 className="size-2.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                    ) : (
+                      <XCircle className="size-2.5 shrink-0 text-destructive" />
+                    )}
+                    <span>
+                      {manualProxyResult.success
+                        ? `Tốt (${manualProxyResult.latency}ms)`
+                        : "Lỗi kết nối"}
+                    </span>
+                  </div>
+                )}
               </div>
 
-              <div>
-                <label className="text-xs font-medium text-zinc-300 block mb-1">
-                  Hạng (Tier):
-                </label>
-                <select
-                  value={tier}
-                  onChange={(e) => setTier(e.target.value)}
-                  className="w-full h-8 rounded-md bg-zinc-900/80 border border-zinc-700 text-zinc-100 text-xs px-2 focus:outline-hidden focus:border-primary"
-                >
-                  <option value="PRO">PRO</option>
-                  <option value="FREE">FREE</option>
-                  <option value="ULTRA">ULTRA</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="text-xs font-medium text-zinc-300 block mb-1">
-                  Số Tín Dụng Ban Đầu:
-                </label>
-                <Input
-                  type="number"
-                  min="0"
-                  value={creditsInput}
-                  onChange={(e) => setCreditsInput(e.target.value)}
-                  placeholder="0"
-                  className="bg-zinc-900/80 border-zinc-700 text-zinc-100 text-xs font-mono placeholder:text-zinc-600"
-                />
-              </div>
             </div>
 
-            <div className="flex items-center justify-end gap-2 pt-3 border-t border-zinc-800">
+            <div className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
+              Hạn mức, credit và tier không nhập thủ công. Sau khi thêm tài khoản, hệ thống sẽ đọc trực tiếp từ Flow và Gemini rồi tự đồng bộ định kỳ.
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-border">
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
                 onClick={onClose}
                 disabled={isSubmitting}
-                className="text-xs border-zinc-700 bg-zinc-800 text-zinc-200 hover:bg-zinc-700"
+                className="text-xs"
               >
                 Hủy
               </Button>

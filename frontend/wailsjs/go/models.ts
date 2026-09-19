@@ -79,10 +79,6 @@ export namespace models {
 	}
 	export class BulkAccountItem {
 	    email: string;
-	    password?: string;
-	    recoveryEmail?: string;
-	    proxy?: string;
-	    cookies?: string;
 	    status: string;
 	    message?: string;
 	
@@ -93,10 +89,6 @@ export namespace models {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.email = source["email"];
-	        this.password = source["password"];
-	        this.recoveryEmail = source["recoveryEmail"];
-	        this.proxy = source["proxy"];
-	        this.cookies = source["cookies"];
 	        this.status = source["status"];
 	        this.message = source["message"];
 	    }
@@ -158,6 +150,24 @@ export namespace models {
 		    }
 		    return a;
 		}
+	}
+	export class CachePurgeResult {
+	    success: boolean;
+	    freedBytes: number;
+	    profilesCleaned: number;
+	    message: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CachePurgeResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.success = source["success"];
+	        this.freedBytes = source["freedBytes"];
+	        this.profilesCleaned = source["profilesCleaned"];
+	        this.message = source["message"];
+	    }
 	}
 	export class GatewayStatus {
 	    isRunning: boolean;
@@ -221,6 +231,117 @@ export namespace models {
 	        this.createdAt = source["createdAt"];
 	    }
 	}
+	export class LiveGeminiQuota {
+	    available: boolean;
+	    tier: string;
+	    currentUsedPercent: number;
+	    hasCurrentUsedPercent: boolean;
+	    currentRemainingPercent: number;
+	    hasCurrentRemaining: boolean;
+	    currentResetAt?: string;
+	    weeklyUsedPercent: number;
+	    hasWeeklyUsedPercent: boolean;
+	    weeklyRemainingPercent: number;
+	    hasWeeklyRemaining: boolean;
+	    weeklyResetAt?: string;
+	    message?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new LiveGeminiQuota(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.available = source["available"];
+	        this.tier = source["tier"];
+	        this.currentUsedPercent = source["currentUsedPercent"];
+	        this.hasCurrentUsedPercent = source["hasCurrentUsedPercent"];
+	        this.currentRemainingPercent = source["currentRemainingPercent"];
+	        this.hasCurrentRemaining = source["hasCurrentRemaining"];
+	        this.currentResetAt = source["currentResetAt"];
+	        this.weeklyUsedPercent = source["weeklyUsedPercent"];
+	        this.hasWeeklyUsedPercent = source["hasWeeklyUsedPercent"];
+	        this.weeklyRemainingPercent = source["weeklyRemainingPercent"];
+	        this.hasWeeklyRemaining = source["hasWeeklyRemaining"];
+	        this.weeklyResetAt = source["weeklyResetAt"];
+	        this.message = source["message"];
+	    }
+	}
+	export class LiveFlowQuota {
+	    available: boolean;
+	    tier: string;
+	    totalCredits: number;
+	    hasTotalCredits: boolean;
+	    dailyCredits: number;
+	    hasDailyCredits: boolean;
+	    monthlyCredits: number;
+	    hasMonthlyCredits: boolean;
+	    dailyResetAt?: string;
+	    monthlyResetAt?: string;
+	    message?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new LiveFlowQuota(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.available = source["available"];
+	        this.tier = source["tier"];
+	        this.totalCredits = source["totalCredits"];
+	        this.hasTotalCredits = source["hasTotalCredits"];
+	        this.dailyCredits = source["dailyCredits"];
+	        this.hasDailyCredits = source["hasDailyCredits"];
+	        this.monthlyCredits = source["monthlyCredits"];
+	        this.hasMonthlyCredits = source["hasMonthlyCredits"];
+	        this.dailyResetAt = source["dailyResetAt"];
+	        this.monthlyResetAt = source["monthlyResetAt"];
+	        this.message = source["message"];
+	    }
+	}
+	export class LiveAccountMetrics {
+	    accountId: string;
+	    status: string;
+	    flow: LiveFlowQuota;
+	    gemini: LiveGeminiQuota;
+	    // Go type: time
+	    retrievedAt: any;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new LiveAccountMetrics(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.accountId = source["accountId"];
+	        this.status = source["status"];
+	        this.flow = this.convertValues(source["flow"], LiveFlowQuota);
+	        this.gemini = this.convertValues(source["gemini"], LiveGeminiQuota);
+	        this.retrievedAt = this.convertValues(source["retrievedAt"], null);
+	        this.error = source["error"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	
 	export class LoginSessionStatus {
 	    sessionId: string;
 	    step: string;

@@ -26,8 +26,8 @@ export function DeleteGoogleAccount(arg1) {
   return window['go']['main']['App']['DeleteGoogleAccount'](arg1);
 }
 
-export function ExportAccountsBackupDialog() {
-  return window['go']['main']['App']['ExportAccountsBackupDialog']();
+export function ExportAccountsBackupDialog(arg1) {
+  return window['go']['main']['App']['ExportAccountsBackupDialog'](arg1);
 }
 
 export function GetCurrentUser() {
@@ -38,20 +38,32 @@ export function GetGatewayStatus() {
   return window['go']['main']['App']['GetGatewayStatus']();
 }
 
+export function GetGoogleAccountProxy(arg1) {
+  return window['go']['main']['App']['GetGoogleAccountProxy'](arg1);
+}
+
 export function GetGoogleLoginStatus(arg1) {
   return window['go']['main']['App']['GetGoogleLoginStatus'](arg1);
+}
+
+export function GetLiveGoogleAccountMetrics(arg1) {
+  return window['go']['main']['App']['GetLiveGoogleAccountMetrics'](arg1);
 }
 
 export function GetSettings() {
   return window['go']['main']['App']['GetSettings']();
 }
 
-export function ImportAccountsBackupDialog() {
-  return window['go']['main']['App']['ImportAccountsBackupDialog']();
+export function ImportAccountsBackupDialog(arg1) {
+  return window['go']['main']['App']['ImportAccountsBackupDialog'](arg1);
 }
 
 export function ImportGLabsBackup(arg1) {
   return window['go']['main']['App']['ImportGLabsBackup'](arg1);
+}
+
+export function IsAuthSetupRequired() {
+  return window['go']['main']['App']['IsAuthSetupRequired']();
 }
 
 export function ListGoogleAccounts() {
@@ -68,6 +80,10 @@ export function Logout() {
 
 export function OpenGoogleAccountBrowser(arg1) {
   return window['go']['main']['App']['OpenGoogleAccountBrowser'](arg1);
+}
+
+export function PurgeGoogleAccountCaches() {
+  return window['go']['main']['App']['PurgeGoogleAccountCaches']();
 }
 
 export function RefreshAllGoogleAccounts() {
@@ -90,8 +106,8 @@ export function StartGateway(arg1) {
   return window['go']['main']['App']['StartGateway'](arg1);
 }
 
-export function StartGoogleLogin(arg1, arg2) {
-  return window['go']['main']['App']['StartGoogleLogin'](arg1, arg2);
+export function StartGoogleLogin(arg1) {
+  return window['go']['main']['App']['StartGoogleLogin'](arg1);
 }
 
 export function StopGateway() {
