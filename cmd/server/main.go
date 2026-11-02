@@ -14,7 +14,10 @@ import (
 	"time"
 
 	"dezuxk/internal/config"
-	"dezuxk/internal/domain/providers"
+	"dezuxk/internal/pool"
+	"dezuxk/internal/provider/manifest"
+	"dezuxk/internal/provider/registry"
+	"dezuxk/internal/proxy"
 	"dezuxk/internal/security"
 	"dezuxk/internal/server"
 	"dezuxk/internal/storage/sqlite"
@@ -40,10 +43,25 @@ func main() {
 		"dpapi", cfg.Security.UseDPAPI,
 	)
 
-	// 2. Initialize persistence storage
+	// Context for initialization and shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// 2. Resolve master encryption key dynamically (Zero-Hardcode)
+	keyResolver := config.NewKeyResolver()
+	keyRes, err := keyResolver.Resolve(ctx, cfg, cfg.ResolverFlags)
+	if err != nil {
+		logger.Error("failed to resolve master encryption key", "error", err)
+		os.Exit(1)
+	}
+	cfg.Security.MasterKey = keyRes.Key
+
+	logger.Info("master key resolved", "source", keyRes.Source)
+	if keyRes.FilePath != "" {
+		logger.Info("master key file loaded", "path", keyRes.FilePath)
+	}
+
+	// 3. Initialize persistence storage
 	dbPath := cfg.Storage.DBFile
 	if !filepath.IsAbs(dbPath) && cfg.Storage.DataDir != "." && cfg.Storage.DataDir != "" {
 		dbPath = filepath.Join(cfg.Storage.DataDir, dbPath)
@@ -59,21 +77,72 @@ func main() {
 	}
 	defer db.Close()
 
-	// 3. Initialize security cipher
+	// 4. Initialize security cipher
 	cipher, err := security.NewAdaptiveCipher(cfg.Security.MasterKey, cfg.Security.UseDPAPI)
 	if err != nil {
 		logger.Error("failed to initialize security cipher", "error", err)
 		os.Exit(1)
 	}
 
-	// 4. Initialize repository
+	// 5. Initialize repository
 	repo := sqlite.NewProvidersRepository(db, cipher)
 
-	// Seed default provider 'flow' if not already present
-	seedDefaultProviders(ctx, repo, logger)
+	// 6. Initialize Dynamic Provider Manifest Loader & Registry
+	validator := manifest.NewValidator()
+	loader := manifest.NewLoader(validator)
+	reg := registry.NewRegistry(repo)
 
-	// 5. Build HTTP server
-	srv := server.NewServer(cfg, repo)
+	// Hydrate registry with any existing providers in persistence
+	if _, err := reg.LoadFromRepository(ctx); err != nil {
+		logger.Warn("could not load existing providers from repository", "error", err)
+	}
+
+	// Resolve manifests directory from configuration
+	manifestsDir := cfg.GetManifestsDir()
+
+	// Load manifests from filesystem directory, falling back to embedded manifests
+	provs, err := loader.LoadDirectory(manifestsDir)
+	if err != nil || len(provs) == 0 {
+		logger.Info("no filesystem manifests found; loading embedded fallback manifests",
+			"dir", manifestsDir,
+			"err", err,
+		)
+		provs, err = loader.LoadEmbedded()
+		if err != nil {
+			logger.Error("failed to load embedded provider manifests", "error", err)
+			os.Exit(1)
+		}
+	}
+
+	// Register loaded manifests into registry and synchronize to persistence
+	if err := reg.RegisterBatch(ctx, provs); err != nil {
+		logger.Error("failed to register provider manifests into registry", "error", err)
+		os.Exit(1)
+	}
+
+	logger.Info("dynamic provider manifests loaded and registered", "count", len(provs))
+	for _, p := range provs {
+		logger.Info("active provider registered", "id", p.ID, "name", p.Name, "base_url", p.BaseURL)
+	}
+
+	// 6b. Initialize Account Pool Manager (Milestone 3)
+	poolMgr := pool.NewManager(repo)
+	if loaded, err := poolMgr.LoadFromRepository(ctx); err != nil {
+		logger.Warn("could not load existing accounts into pool", "error", err)
+	} else {
+		logger.Info("account pool hydrated", "accounts_loaded", loaded)
+	}
+	defer poolMgr.Close()
+
+	// 6c. Initialize Dynamic Reverse Proxy Engine (Milestone 4)
+	proxyEngine := proxy.NewEngine(repo, reg, poolMgr)
+
+	// 7. Build HTTP server with registry, pool, and proxy injected
+	srv := server.NewServer(cfg, repo,
+		server.WithRegistry(reg),
+		server.WithPool(poolMgr),
+		server.WithProxy(proxyEngine),
+	)
 
 	httpServer := &http.Server{
 		Addr:         fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port),
@@ -83,7 +152,7 @@ func main() {
 		IdleTimeout:  120 * time.Second,
 	}
 
-	// 6. Graceful shutdown handling
+	// 8. Graceful shutdown handling
 	stopChan := make(chan os.Signal, 1)
 	signal.Notify(stopChan, os.Interrupt, syscall.SIGTERM)
 
@@ -106,31 +175,4 @@ func main() {
 	}
 
 	logger.Info("dezuxk gateway stopped")
-}
-
-func seedDefaultProviders(ctx context.Context, repo providers.Repository, logger *slog.Logger) {
-	existing, err := repo.GetProvider(ctx, "flow")
-	if err != nil || existing != nil {
-		return
-	}
-
-	p := &providers.Provider{
-		ID:             "flow",
-		Name:           "Google Flow",
-		BaseURL:        "https://flow.google.com",
-		AuthDomain:     ".google.com",
-		AllowedDomains: []string{".google.com", "flow.google.com"},
-		ProbeRules: providers.ProbeRules{
-			IdentityExpressions: []string{`[data-email]`, `meta[name="user-email"]`},
-			DiscoveryKeywords:   []string{"BatchGenerateImages", "FlowService"},
-		},
-		SecurityRules: map[string]any{"anti_bot": true},
-		Status:        providers.ProviderStatusActive,
-	}
-
-	if err := repo.SaveProvider(ctx, p); err != nil {
-		logger.Warn("could not seed default flow provider", "error", err)
-	} else {
-		logger.Info("seeded default flow provider manifest")
-	}
 }

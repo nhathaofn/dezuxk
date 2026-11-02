@@ -1,0 +1,24 @@
+{
+  "id": "flow",
+  "name": "Google Flow",
+  "base_url": "https://flow.google.com",
+  "auth_domain": ".google.com",
+  "allowed_domains": [
+    ".google.com",
+    "flow.google.com"
+  ],
+  "probe_rules": {
+    "identityExpressions": [
+      "[data-email]",
+      "meta[name=\"user-email\"]"
+    ],
+    "discoveryKeywords": [
+      "BatchGenerateImages",
+      "FlowService"
+    ]
+  },
+  "security_rules": {
+    "anti_bot": true
+  },
+  "status": "active"
+}
